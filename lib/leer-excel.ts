@@ -109,7 +109,12 @@ export function excelATexto(bytes: Uint8Array): string | null {
   for (const mRow of hoja.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
     if (filas.length >= MAX_FILAS) break
     const celdas: string[] = []
-    for (const mC of mRow[1].matchAll(/<c([^>]*)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+    // OJO (caso Molinas 07-sep): los atributos van LAZY. Con `[^>]*` codicioso,
+    // una celda vacía autocerrada `<c r="C38" s="50" />` se tragaba el `/`, no
+    // calzaba `\/>` y seguía hasta el `</c>` de la celda SIGUIENTE: la columna
+    // RUT (texto compartido) salía como el índice crudo ("127") en la columna
+    // equivocada, y toda la planilla del cliente parecía "sin datos".
+    for (const mC of mRow[1].matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
       const attrs = mC[1] || ""
       const cuerpo = mC[2] || ""
       const ref = /r="([A-Z]+\d+)"/.exec(attrs)?.[1] || ""
