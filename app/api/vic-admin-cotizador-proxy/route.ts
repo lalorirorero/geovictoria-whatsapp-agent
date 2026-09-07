@@ -61,6 +61,9 @@ const POST_PERMITIDOS = new Set([
   // Barrido de correos de cotización pendientes (01-sep, regla Lalo "si el
   // correo existe, el correo sale"): disparo manual del cron determinista.
   "/api/quote-acceptance/correos-pendientes",
+  // NDV del alta por chat (07-sep): convertir+confirmar con la empresa creada
+  // y enlazar la Referencia NDV — reintento manual del job de lib/ndv-alta.
+  "/api/creator/ndv-alta-chat",
 ])
 
 export async function POST(req: Request): Promise<Response> {

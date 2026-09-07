@@ -88,6 +88,11 @@ export const JOBS_HUERFANOS: Array<{ nombre: string; path: string; cadaMin: numb
   // capacitación a las 24 h hábiles, nómina el día antes del curso) y el
   // equipo un aviso cuando tampoco eso alcanza. Caso Maquinarias Santa Sara.
   { nombre: "onboarding_toques", path: "/api/vic-onboarding-toques", cadaMin: 30 },
+  // NDV confirmada → Implementación del alta por chat (Lalo 07-sep: "la NDV
+  // la confirmamos nosotros antes de crear la implementación"). El job nace
+  // en el alta y se intenta una vez en línea; acá se empuja cada ~2' hasta
+  // que la nota esté confirmada y la implementación enlazada (lib/ndv-alta).
+  { nombre: "onb_ndv_imp", path: "/api/vic-onboarding-ndv-imp", cadaMin: 2 },
 ]
 
 /**

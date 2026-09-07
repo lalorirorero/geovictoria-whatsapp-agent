@@ -682,45 +682,26 @@ export async function armarOnboarding(contact: string): Promise<{
             // ahí y no generaba ninguna. Best-effort: si Zoho falla, el alta
             // NO se cae —el cliente ya pagó y ya tiene su cuenta— y queda
             // aviso para crearla a mano.
-            void import("./implementacion-vicky")
+            // NDV PRIMERO, IMPLEMENTACIÓN DESPUÉS (Lalo 07-sep): la nota de
+            // venta se convierte y confirma con la empresa recién creada y la
+            // implementación nace con su id (lib/ndv-alta). Es un JOB: una
+            // pasada en línea acá y el cron vic-onboarding-ndv-imp lo empuja
+            // cada ~2' hasta terminar (la confirmación espera el PDF que
+            // Creator genera en background — no cabe en este turno). Si la
+            // NDV no se logra en el tope, la implementación nace igual con
+            // aviso: el cliente ya pagó y ya tiene su cuenta.
+            void import("./ndv-alta")
               .then(async (m) => {
-                // Cuenta, contacto, deal, ejecutivo, dotación y correo del
-                // solicitante salen de la VENTA (05-sep): antes nacía sin ellos.
-                const ctx = await m.contextoImplementacionDesdeVenta(contact)
-                const imp = await m.crearImplementacionGvAvanzado({
-                  ...ctx,
-                  razonSocial: b.empresa.nombre || "",
+                await m.encolarNdvImp(contact, {
+                  companyId: String(alta.companyId || ""),
+                  empresa: b.empresa.nombre || "",
                   // El identificador del borrador ES el RUT (así lo pide la
                   // API de alta: sin puntos ni guión).
                   rut: b.empresa.identificador || undefined,
-                  companyId: String(alta.companyId || ""),
-                  comentarios: `Alta por chat de Vicky (companyId ${alta.companyId}). Empresa YA creada en la plataforma; no requiere creación.`,
                 })
-                if (imp) {
-                  // Se GUARDA quién es su relator y el número de
-                  // implementación: hasta hoy esto se calculaba, se anunciaba
-                  // por interno y se botaba, así que cuando llegaba el momento
-                  // de agendar la capacitación no había forma de saber a cuál
-                  // de los cuatro servicios de Bookings correspondía.
-                  await setKvValue(
-                    claveCapacitacion(contact),
-                    JSON.stringify({
-                      implementacionId: imp.id,
-                      numero: imp.numero || "",
-                      relator: imp.relator,
-                      empresa: b.empresa.nombre || "",
-                    }),
-                  ).catch(() => {})
-                  await avisarEquipoInterno(
-                    `🛠️ IMPLEMENTACIÓN GV Avanzado creada para ${b.empresa.nombre} → ${imp.relator.nombre} (${imp.relator.email})${imp.numero ? ` · ${imp.numero}` : ""}.`,
-                  ).catch(() => {})
-                } else {
-                  await avisarEquipoInterno(
-                    `⚠️ NO se pudo crear la implementación de ${b.empresa.nombre} (companyId ${alta.companyId}). La empresa SÍ quedó creada — hay que abrir la implementación a mano.`,
-                  ).catch(() => {})
-                }
+                await m.procesarNdvImp(contact)
               })
-              .catch(() => {})
+              .catch((e) => console.warn("[onboarding] job NDV/implementación no arrancó:", e instanceof Error ? e.message : e))
             // Correo de INSTRUCCIONES de ingreso (Lalo 25-ago, referencia
             // plantillas GeoAvanzado): viaja junto al de la contraseña,
             // best-effort — jamás bloquea el alta.
