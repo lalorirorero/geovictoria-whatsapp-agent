@@ -280,6 +280,8 @@ export function cinturonPrecioSobreUmbral(reply: string): { habiaPrecio: boolean
   return {
     habiaPrecio,
     reemplazo:
-      "El valor exacto para tu dotación te lo entrega directamente nuestro ejecutivo en la propuesta, con los descuentos por volumen que apliquen a tu operación. Aquí sigo yo para todo lo demás — qué más te gustaría saber?",
+      // Framing ganador (Lalo 07-sep, punto 11 del cierre de objeciones): el
+      // ejecutivo entra por el DESCUENTO POR VOLUMEN, no porque Vicky "no pueda".
+      "Para esa dotación aplican descuentos por volumen, así que la propuesta te la arma directamente nuestro ejecutivo con el mejor valor para tu operación — te contacta hoy mismo si estamos en horario hábil. Aquí sigo yo para todo lo demás: ¿prefieres que te llame a este número o agendamos de una vez?",
   }
 }

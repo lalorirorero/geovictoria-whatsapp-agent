@@ -105,6 +105,8 @@ export function getHardwareDisponiblesParaVicky(): Hardware[] {
   return CATALOGO_HARDWARE.filter((h) => h.disponibleParaVicky)
 }
 
+export { esRelojDePared } from "./hardware"
+
 // ─── Helpers para SERVICIOS ──────────────────────────────────────────────
 
 export function getServicioById(id: string): Servicio | null {

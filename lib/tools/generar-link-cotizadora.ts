@@ -28,9 +28,11 @@ import {
   obtenerPrecioServicio,
   obtenerTierAplicable,
   validarRangoModulo,
+  esRelojDePared,
 } from "@/lib/catalogo"
 import { anotarTablaPrecios } from "@/lib/nota-tabla-precios"
 import { clasificarUbicacion } from "@/lib/geografia"
+import { esInstalacionBonificada } from "@/lib/catalogo/servicios"
 import { getUFActual } from "@/lib/uf"
 import { rutValido, formatearRut } from "@/lib/rut"
 import { avisarEquipoInterno } from "@/lib/alerta-interna"
@@ -491,14 +493,16 @@ export function construirItemsCotizacion(args: ConstruirItemsArgs): ConstruirIte
   // zona, y SOLOS no se cotizan (sin reloj no hay lector que las lea).
   const hayAccesorios = hardware.some((hw) => getHardwareDisponibleParaVicky(hw.id)?.esAccesorio === true)
   const hardwareEquipos = hardware.filter((hw) => getHardwareDisponibleParaVicky(hw.id)?.esAccesorio !== true)
-  if (hayAccesorios && !hardwareEquipos.some((hw) => hw.id === "senseface_2a")) {
+  if (hayAccesorios && !hardwareEquipos.some((hw) => esRelojDePared(hw.id))) {
     return {
       ok: false,
       error:
-        "Las tarjetas de proximidad solo acompañan al reloj control físico (se marcan en su lector). " +
-        "Cotízalas junto al reloj, o agrega el reloj a la configuración.",
+        "Los accesorios (tarjetas de proximidad, impresora térmica) solo acompañan a un reloj control físico de pared. " +
+        "Cotízalos junto al reloj, o agrega el reloj a la configuración.",
     }
   }
+  // Accesorio con arriendo disponible (impresora): sigue la modalidad del reloj.
+  const relojEnArriendo = hardwareEquipos.some((hw) => (hw.modalidad ?? "arriendo") === "arriendo")
 
   let hayHardware = false
   for (const hw of hardware) {
@@ -506,7 +510,9 @@ export function construirItemsCotizacion(args: ConstruirItemsArgs): ConstruirIte
     if (!dispositivo) return { ok: false, error: `Hardware '${hw.id}' no está habilitado para Vicky.` }
     const esAccesorio = dispositivo.esAccesorio === true
     const cantidad = hw.cantidad ?? dispositivo.cantidadSugerida
-    const modalidadElegida: "arriendo" | "venta" = hw.modalidad ?? (esAccesorio ? "venta" : "arriendo")
+    const modalidadAccesorio: "arriendo" | "venta" =
+      relojEnArriendo && dispositivo.modalidadesDisponibles.includes("arriendo") ? "arriendo" : "venta"
+    const modalidadElegida: "arriendo" | "venta" = hw.modalidad ?? (esAccesorio ? modalidadAccesorio : "arriendo")
     if (!dispositivo.modalidadesDisponibles.includes(modalidadElegida)) {
       return { ok: false, error: `${dispositivo.displayName} no disponible en modalidad '${modalidadElegida}'` }
     }
@@ -648,6 +654,11 @@ export function construirItemsCotizacion(args: ConstruirItemsArgs): ConstruirIte
           // Otras combinaciones sin cobro: no se agrega línea.
           continue
         }
+        // INSTALACIÓN BONIFICADA — arriendo en RM (Lalo 07-sep): la visita
+        // técnica no se cobra; la línea muestra la tarifa de lista TACHADA
+        // (−100 %), mismo patrón del envío del arriendo. Subtotal 0.
+        const bonificada =
+          servicio.id === "instalacion_reloj" && esInstalacionBonificada(modalidadPunto, zonaPunto)
         items.push({
           tipo: "servicio",
           id: servicio.id,
@@ -655,8 +666,9 @@ export function construirItemsCotizacion(args: ConstruirItemsArgs): ConstruirIte
           modalidad: "Cobro único",
           cantidad: 1,
           precioUnitarioUF: precioUF,
-          subtotalUF: Number(precioUF.toFixed(3)),
+          subtotalUF: bonificada ? 0 : Number(precioUF.toFixed(3)),
           zonaTarifa: esRM ? "RM" : "regiones",
+          ...(bonificada ? { descuentoPct: 100 } : {}),
         })
       }
     }
@@ -675,6 +687,8 @@ export function construirItemsCotizacion(args: ConstruirItemsArgs): ConstruirIte
       for (let ix = items.length - 1; ix >= 0; ix--) {
         const it = items[ix]
         if (it.tipo !== "hardware" || it.modalidad !== "Arriendo mensual") continue
+        // Los accesorios en arriendo (impresora) no llevan recargo de zona.
+        if (getHardwareDisponibleParaVicky(it.id)?.esAccesorio === true) continue
         const enRegiones = Math.min(it.cantidad, puntosRegionesArr)
         const enRM = it.cantidad - enRegiones
         const precioReg = Number((it.precioUnitarioUF + ARRIENDO_RECARGO_REGIONES_UF).toFixed(3))

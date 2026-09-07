@@ -69,6 +69,48 @@ export const CATALOGO_HARDWARE: Hardware[] = [
     esAccesorio: true,
   },
 
+  // KIT QR (Lalo 07-sep, cierre de objeciones — "el QR es un producto aparte
+  // en la calculadora? habría que agregarlo al catálogo de Vicky"): es el
+  // bundle de la calculadora comercial de Nacho (KIT_QR_ARRIENDO_UF = 1,8):
+  // Senseface 3A + gabinete con lector de CI + lector de código de barras
+  // Vuquest 3320g. SOLO ARRIENDO, precio del kit completo por mes. Se
+  // comporta como reloj de pared: punto físico, envío bonificado del
+  // arriendo, instalación por zona.
+  {
+    id: "kit_qr",
+    modelo: "Kit QR: Senseface 3A + gabinete lector CI + lector Vuquest 3320g",
+    displayName: "Reloj con lector QR",
+    conexion: "WIFI/LAN",
+    ventaUF: 0,
+    arriendoUF: 1.8,
+    descripcion:
+      "Reloj control físico con lector de código QR y de cédula de identidad: la persona marca acercando un QR (impreso o desde su celular) o su carnet, además de rostro, huella o clave. Es un kit de arriendo mensual (reloj + gabinete con lector). Solo en arriendo. Para clientes que piden marcar con QR o con la cédula.",
+    modalidadesDisponibles: ["arriendo"],
+    cantidadSugerida: 1,
+    requiereInstalacionOnsite: true,
+    disponibleParaVicky: true,
+  },
+
+  // IMPRESORA TÉRMICA DE COMPROBANTES (Lalo 07-sep): accesorio del reloj de
+  // pared para el cliente que igual quiere ticket en papel (el comprobante
+  // digital al correo ya cumple la norma). Lista de Nacho: SLK-TL202II venta
+  // 7 UF / arriendo 1,2 UF. Books: "013 - Impresora Termica (Fiscal)".
+  {
+    id: "impresora_termica",
+    modelo: "SLK-TL202II",
+    displayName: "Impresora térmica de comprobantes",
+    conexion: "Serial",
+    ventaUF: 7,
+    arriendoUF: 1.2,
+    descripcion:
+      "Impresora térmica que se conecta al reloj control físico e imprime un comprobante en papel de cada marca (además del comprobante digital que llega al correo del trabajador). Accesorio: solo acompaña a un reloj de pared, no lleva envío ni instalación propios. Se puede arrendar junto con el reloj o comprar.",
+    modalidadesDisponibles: ["arriendo", "venta"],
+    cantidadSugerida: 1,
+    requiereInstalacionOnsite: false,
+    disponibleParaVicky: true,
+    esAccesorio: true,
+  },
+
   // ─── DECLARADOS PERO DESHABILITADOS ─────────────────────────────────────
   {
     id: "armorpad",
@@ -239,3 +281,14 @@ export const CATALOGO_HARDWARE: Hardware[] = [
     disponibleParaVicky: false,
   },
 ]
+
+/**
+ * Reloj de PARED (autónomo, en punto fijo): el único equipo al que pueden
+ * acompañar los accesorios (tarjetas, impresora). Excluye accesorios, el
+ * hardware plug-and-play (huellero USB) y lo no habilitado para Vicky.
+ * Vive acá (y no en index.ts) para que sea testeable sin resolver alias.
+ */
+export function esRelojDePared(id: string): boolean {
+  const h = CATALOGO_HARDWARE.find((x) => x.id === id)
+  return Boolean(h && h.disponibleParaVicky && h.esAccesorio !== true && h.requiereInstalacionOnsite !== false)
+}

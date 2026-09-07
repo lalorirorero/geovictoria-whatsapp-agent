@@ -43,8 +43,10 @@ import {
   obtenerPrecioServicio,
   obtenerTierAplicable,
   validarRangoModulo,
+  esRelojDePared,
 } from "@/lib/catalogo"
 import { clasificarUbicacion } from "@/lib/geografia"
+import { esInstalacionBonificada } from "@/lib/catalogo/servicios"
 import { consolidarLineasIguales } from "./generar-link-cotizadora"
 import { getUFActual } from "@/lib/uf"
 
@@ -152,6 +154,8 @@ export type ItemCotizacion = {
   precioUnitarioUF: number
   subtotalUF: number
   tierAplicado?: string // ej. "11-20 usuarios" — uso interno, NO se muestra al prospecto
+  /** Bonificación por línea (100 = sin costo, se muestra tachada). */
+  descuentoPct?: number
 }
 
 export type PuntoInstalacionInput = {
@@ -329,14 +333,17 @@ export async function cotizarReferencial(args: {
   // reloj — no cuenta para puntos/envío/instalación y sola no se cotiza.
   const hayAccesorios = hardware.some((hw) => getHardwareDisponibleParaVicky(hw.id)?.esAccesorio === true)
   const hardwareEquipos = hardware.filter((hw) => getHardwareDisponibleParaVicky(hw.id)?.esAccesorio !== true)
-  if (hayAccesorios && !hardwareEquipos.some((hw) => hw.id === "senseface_2a")) {
+  if (hayAccesorios && !hardwareEquipos.some((hw) => esRelojDePared(hw.id))) {
     return {
       ok: false,
       error:
-        "Las tarjetas de proximidad solo acompañan al reloj control físico (se marcan en su lector). " +
-        "Cotízalas junto al reloj, o agrega el reloj a la configuración.",
+        "Los accesorios (tarjetas de proximidad, impresora térmica) solo acompañan a un reloj control físico de pared. " +
+        "Cotízalos junto al reloj, o agrega el reloj a la configuración.",
     }
   }
+  // Los accesorios con arriendo disponible (impresora) siguen la modalidad
+  // del reloj: si el reloj va arrendado, el accesorio también (Lalo 07-sep).
+  const relojEnArriendo = hardwareEquipos.some((hw) => (hw.modalidad ?? "arriendo") === "arriendo")
   let hayHardware = false
   for (const hw of hardware) {
     const dispositivo = getHardwareDisponibleParaVicky(hw.id)
@@ -350,7 +357,9 @@ export async function cotizarReferencial(args: {
 
     const esAccesorio = dispositivo.esAccesorio === true
     const cantidad = hw.cantidad ?? dispositivo.cantidadSugerida
-    const modalidadElegida: "arriendo" | "venta" = hw.modalidad ?? (esAccesorio ? "venta" : "arriendo")
+    const modalidadAccesorio: "arriendo" | "venta" =
+      relojEnArriendo && dispositivo.modalidadesDisponibles.includes("arriendo") ? "arriendo" : "venta"
+    const modalidadElegida: "arriendo" | "venta" = hw.modalidad ?? (esAccesorio ? modalidadAccesorio : "arriendo")
 
     if (!dispositivo.modalidadesDisponibles.includes(modalidadElegida)) {
       return {
@@ -461,6 +470,10 @@ export async function cotizarReferencial(args: {
         }
         const precioUF = obtenerPrecioServicio(servicio, zonaPunto, modalidadPunto)
         if (precioUF <= 0) continue
+        // INSTALACIÓN BONIFICADA — arriendo en RM (Lalo 07-sep): la visita
+        // técnica va sin costo; la línea muestra la tarifa de lista tachada.
+        const bonificada =
+          servicio.id === "instalacion_reloj" && esInstalacionBonificada(modalidadPunto, zonaPunto)
         items.push({
           tipo: "servicio",
           id: servicio.id,
@@ -468,7 +481,8 @@ export async function cotizarReferencial(args: {
           modalidad: "Cobro único",
           cantidad: 1,
           precioUnitarioUF: precioUF,
-          subtotalUF: Number(precioUF.toFixed(3)),
+          subtotalUF: bonificada ? 0 : Number(precioUF.toFixed(3)),
+          ...(bonificada ? { descuentoPct: 100 } : {}),
         })
       }
     }
@@ -488,6 +502,8 @@ export async function cotizarReferencial(args: {
       for (let ix = items.length - 1; ix >= 0; ix--) {
         const it = items[ix]
         if (it.tipo !== "hardware" || it.modalidad !== "Arriendo mensual") continue
+        // Los accesorios en arriendo (impresora) no llevan recargo de zona.
+        if (getHardwareDisponibleParaVicky(it.id)?.esAccesorio === true) continue
         const enRegiones = Math.min(it.cantidad, puntosRegiones)
         const enRM = it.cantidad - enRegiones
         const precioReg = Number((it.precioUnitarioUF + ARRIENDO_RECARGO_REGIONES_UF).toFixed(3))
@@ -663,6 +679,7 @@ export async function cotizarReferencial(args: {
   // la cotización con autoInstalada=false). Se calcula acá arriba porque lo
   // usan DOS textos: el disclaimer clásico y la Opción 1 del doble valor.
   let instalacionTecnicoUF = 0
+  let puntosInstalacionGratis = 0
   const instalacionPorPunto: Array<{ ubicacion: string; uf: number }> = []
   if (hayReloj && !instalacionCotizada && !todoPlugAndPlay) {
     try {
@@ -674,9 +691,16 @@ export async function cotizarReferencial(args: {
       for (const punto of puntosInstalacion) {
         const c = clasificarUbicacion(punto.ubicacion)
         if (c.tipo === "no_clasificable") continue
+        const modP = punto.modalidad ?? modU
+        // Arriendo en RM: el técnico va sin costo (Lalo 07-sep) — cuenta
+        // como punto bonificado, no como monto.
+        if (esInstalacionBonificada(modP, c.zonaInstalacion)) {
+          puntosInstalacionGratis += 1
+          continue
+        }
         let ufPunto = 0
         for (const s of serviciosInstalacion) {
-          ufPunto += obtenerPrecioServicio(s, c.zonaInstalacion, punto.modalidad ?? modU)
+          ufPunto += obtenerPrecioServicio(s, c.zonaInstalacion, modP)
         }
         instalacionTecnicoUF += ufPunto
         if (ufPunto > 0) instalacionPorPunto.push({ ubicacion: punto.ubicacion, uf: ufPunto })
@@ -685,11 +709,20 @@ export async function cotizarReferencial(args: {
       instalacionTecnicoUF = 0 // sin precio calculable: cae al texto genérico
     }
   }
+  const instalacionGratisTotal =
+    puntosInstalacionGratis > 0 && puntosInstalacionGratis >= puntosInstalacion.length
+  const instalacionCotizadaBonificada = itemsConsolidados.some(
+    (i) => i.tipo === "servicio" && /instalaci/i.test(i.nombre) && Number(i.descuentoPct) >= 100,
+  )
   if (hayReloj && !instalacionCotizada && !todoPlugAndPlay) {
     partes.push("")
     partes.push("[---]")
     partes.push("")
-    if (instalacionTecnicoUF > 0) {
+    if (instalacionGratisTotal) {
+      partes.push(
+        "📌 La instalación por nuestro equipo técnico va INCLUIDA sin costo (arriendo en la Región Metropolitana): coordinamos la visita cuando llegue el reloj. Y si prefieres montarlo tú, también es simple y te guiamos paso a paso — tú eliges.",
+      )
+    } else if (instalacionTecnicoUF > 0) {
       const instCLP = Math.round(instalacionTecnicoUF * (1 + IVA_RATE) * ufActual)
       partes.push(
         `📌 La instalación del reloj viene considerada por tu cuenta: es simple y te guiamos paso a paso. Si prefieres que la haga nuestro equipo técnico, tiene un cobro único de ${fmtUF(instalacionTecnicoUF)} UF + IVA (aprox. $${fmtNumCL(instCLP, 0)}) — me dices y te lo agrego.`,
@@ -731,7 +764,12 @@ export async function cotizarReferencial(args: {
         // instalemos, tiene un costo único adicional de X UF + IVA."
         let fraseInstalacion = ""
         if (instalacionCotizada) {
-          fraseInstalacion = "En este caso la instalación por nuestro equipo técnico ya viene incluida."
+          fraseInstalacion = instalacionCotizadaBonificada
+            ? "La instalación por nuestro equipo técnico va incluida sin costo (arriendo en la Región Metropolitana)."
+            : "En este caso la instalación por nuestro equipo técnico ya viene incluida."
+        } else if (instalacionGratisTotal) {
+          fraseInstalacion =
+            "La instalación por nuestro equipo técnico va incluida sin costo (arriendo en la Región Metropolitana); si prefieres, el reloj también es autoinstalable."
         } else if (!todoPlugAndPlay) {
           // CON monto (Eduardo 17-ago, segunda vuelta): la comuna ya es
           // conocida en este punto — la tool exige puntosInstalacion con
