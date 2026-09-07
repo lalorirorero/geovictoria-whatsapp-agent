@@ -200,6 +200,8 @@ export function promptConfiguracionCL(estado: {
   pendientes: string[]
   nTrabajadores: number
   altaCreada: boolean
+  /** Bloque de las definiciones para la capacitación (bloquePromptEsquema), opcional. */
+  bloqueEsquema?: string
 }): string {
   const base =
     "Eres Vicky, la asistente de GeoVictoria por WhatsApp. El cliente YA tiene su cuenta " +
@@ -279,5 +281,5 @@ export function promptConfiguracionCL(estado: {
       : estado.nTrabajadores > 0
         ? "\nSin pendientes: puedes ofrecer cerrar la configuración (resumen + confirmación)."
         : "")
-  return base + cuerpo
+  return base + cuerpo + (estado.bloqueEsquema || "")
 }

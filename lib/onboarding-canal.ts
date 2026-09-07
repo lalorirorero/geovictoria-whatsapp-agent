@@ -39,6 +39,8 @@ import {
   claveAltaSolicitada,
   claveCapacitacion,
   claveConfiguracion,
+  claveEsquema,
+  claveEsquemaOfrecido,
   type FaseVicky,
 } from "./onboarding/fase"
 import {
@@ -50,6 +52,16 @@ import {
   type TurnoCfg,
 } from "./onboarding/configuracion"
 import { promptConfiguracionCL } from "./onboarding/prompt"
+import {
+  type EsquemaOperacion,
+  bloquePromptEsquema,
+  fusionarEsquema,
+  mensajeInvitacionEsquema,
+  pendientesEsquema,
+  respondidasEsquema,
+  resumenEsquema,
+} from "./onboarding/esquema"
+import { TOOL_REGISTRAR_ESQUEMA_OPERACION } from "./onboarding/tools"
 import {
   parsearBorrador,
   borradorVacio,
@@ -143,6 +155,13 @@ export async function armarOnboarding(contact: string): Promise<{
       pendientes: faltas.map((f) => f.mensaje),
       listoParaCerrar: faltas.length === 0 && cfg.trabajadores.length > 0,
     }
+  }
+
+  /** Insight de la conversación → Implementación (segundo plano, con debounce). */
+  const sincronizarInsight = (force = false) => {
+    import("./implementacion-insight")
+      .then((m) => m.sincronizarInsightEnSegundoPlano(contact, { force }))
+      .catch(() => null)
   }
 
   const dispatch = async (name: string, input: unknown): Promise<unknown> => {
@@ -340,6 +359,7 @@ export async function armarOnboarding(contact: string): Promise<{
       }
       const detalle = (r.detalle as { response?: { returnvalue?: { meeting_info?: { join_link?: string } } } })?.response
         ?.returnvalue?.meeting_info?.join_link
+      sincronizarInsight(true)
       return {
         ok: true,
         bookingId: r.bookingId,
@@ -350,6 +370,36 @@ export async function armarOnboarding(contact: string): Promise<{
           (bienvenidaEnCamino
             ? `\n\nTe va a llegar la invitación al correo, y además un correo de ${cap.relator.nombre} con tu acceso a la plataforma y el manual del administrador. Cualquier cosa me escribes por acá 😊`
             : `\n\nTe va a llegar la invitación al correo también. Cualquier cosa me escribes por acá 😊`),
+      }
+    }
+
+    // ── Definiciones de operación para la capacitación (Ignacio, 07-sep) ──
+    if (name === TOOL_REGISTRAR_ESQUEMA_OPERACION.name) {
+      const inp = (input || {}) as EsquemaOperacion & { ofrecer?: boolean }
+      const capRaw = await getKvValue(claveCapacitacion(contact)).catch(() => null)
+      const relator = capRaw ? (JSON.parse(capRaw) as { relator?: { nombre?: string } }).relator?.nombre : undefined
+      if (inp.ofrecer === true) {
+        const ya = await getKvValue(claveEsquemaOfrecido(contact)).catch(() => null)
+        if (ya) {
+          return { ok: true, yaOfrecido: true, instruccion: "Ya se le ofrecieron antes: no repitas la lista completa. Si responde algo, guárdalo." }
+        }
+        await setKvValue(claveEsquemaOfrecido(contact), new Date().toISOString()).catch(() => {})
+        return { ok: true, mensajeParaProspecto: mensajeInvitacionEsquema(relator) }
+      }
+      const previo = (await getKvValue(claveEsquema(contact))
+        .then((v) => (v ? (JSON.parse(v) as EsquemaOperacion) : {}))
+        .catch(() => ({}))) as EsquemaOperacion
+      const { ofrecer: _o, ...nuevo } = inp
+      const fusion = { ...fusionarEsquema(previo, nuevo), actualizadoAt: new Date().toISOString() }
+      await setKvValue(claveEsquema(contact), JSON.stringify(fusion)).catch(() => {})
+      sincronizarInsight()
+      return {
+        ok: true,
+        respondidas: respondidasEsquema(fusion).map((p) => p.corta),
+        pendientes: pendientesEsquema(fusion).map((p) => p.corta),
+        resumen: resumenEsquema(fusion),
+        instruccion:
+          "Agradece en una línea y sigue con lo que estaban. No insistas por las pendientes: las ve con el relator.",
       }
     }
 
@@ -387,6 +437,7 @@ export async function armarOnboarding(contact: string): Promise<{
         }
       }
       await guardarConfig(cfg)
+      sincronizarInsight()
       return {
         ok: true,
         agregados: nuevas.length,
@@ -504,6 +555,7 @@ export async function armarOnboarding(contact: string): Promise<{
       const cierre = await cerrarWizard(ses.token, { idZoho: dealId || undefined })
       if ("error" in cierre) return await fallaOperativa(`cierre: ${cierre.error}`)
       await setKvValue(claveFase(contact), "completado").catch(() => {})
+      sincronizarInsight(true)
       await avisarEquipoInterno(
         `✅ CONFIGURACIÓN ONBOARDING de +${contact} cerrada por chat: ${cfg.trabajadores.length} trabajadores, ` +
           `${cfg.turnos.length} turnos, ${cfg.planificaciones.length} planificaciones. Sesión wizard ${ses.token}.`,
@@ -782,11 +834,18 @@ export async function armarOnboarding(contact: string): Promise<{
           const cfg = await cargarConfig()
           const faltas = pendientesConfiguracion(cfg)
           const altaVia = await getKvValue(claveAltaSolicitada(contact)).catch(() => null)
+          const esquema = (await getKvValue(claveEsquema(contact))
+            .then((v) => (v ? (JSON.parse(v) as EsquemaOperacion) : {}))
+            .catch(() => ({}))) as EsquemaOperacion
+          const yaOfrecido = !!(await getKvValue(claveEsquemaOfrecido(contact)).catch(() => null))
+          const capRaw = await getKvValue(claveCapacitacion(contact)).catch(() => null)
+          const nombreRelator = capRaw ? (JSON.parse(capRaw) as { relator?: { nombre?: string } }).relator?.nombre : undefined
           return promptConfiguracionCL({
             resumen: resumenConfiguracion(cfg),
             pendientes: faltas.map((f) => f.mensaje),
             nTrabajadores: cfg.trabajadores.length,
             altaCreada: /companyId/.test(String(altaVia || "")),
+            bloqueEsquema: bloquePromptEsquema(esquema, { yaOfrecido, nombreRelator }),
           })
         })()
       : promptOnboardingCL(borrador, { altaSolicitada }),
@@ -799,6 +858,7 @@ export async function armarOnboarding(contact: string): Promise<{
             TOOL_ASIGNAR_PLANIFICACION,
             TOOL_ELIMINAR_TRABAJADOR,
             TOOL_CONFIRMAR_CONFIGURACION,
+            TOOL_REGISTRAR_ESQUEMA_OPERACION,
             // La capacitación vive en la fase de CONFIGURACIÓN: recién ahí el
             // cliente ya tiene su cuenta y su implementación, que es de donde
             // sale el relator que le toca.

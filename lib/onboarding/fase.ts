@@ -74,3 +74,12 @@ export function faseEfectiva(kvCrudo: string | null | undefined): FaseVicky {
 
 /** Configuración F2 (nómina/turnos/planificaciones) conversada por chat. */
 export const claveConfiguracion = (contact: string) => `onboarding_config_${contact}`
+
+/** Esquema de operación (las 10 definiciones de Ignacio) respondido por chat — opcional. */
+export const claveEsquema = (contact: string) => `onboarding_esquema_${contact}`
+/** Marca de que la invitación a las definiciones ya se envió (se ofrece UNA vez). */
+export const claveEsquemaOfrecido = (contact: string) => `onboarding_esquema_ofrecido_${contact}`
+/** Id de la nota "Insight de la conversación" en la Implementación (para actualizarla, no duplicarla). */
+export const claveInsightNota = (contact: string) => `onb_insight_nota_${contact}`
+/** Última sincronización del insight hacia Zoho (debounce). */
+export const claveInsightSync = (contact: string) => `onb_insight_sync_${contact}`

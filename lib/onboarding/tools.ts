@@ -277,3 +277,41 @@ export const TOOL_AGENDAR_CAPACITACION = {
     required: ["fecha", "hora"],
   },
 }
+
+/**
+ * DEFINICIONES DE OPERACIÓN PARA LA CAPACITACIÓN (lista de Ignacio Salinas,
+ * 07-sep). Opcional por regla de Lalo: se ofrece una vez como mensaje
+ * informativo y se registra lo que el cliente quiera contar. Lo registrado
+ * llega a la Implementación (nota de insight) para el relator.
+ */
+export const TOOL_REGISTRAR_ESQUEMA_OPERACION = {
+  name: "registrar_esquema_operacion",
+  description:
+    "Dos usos. (a) ofrecer=true: devuelve el mensaje informativo EXACTO con las 10 definiciones de operación " +
+    "que ayudan en la capacitación (período de pago, permisos con goce, atrasos/adelantos, colación, ausencias, " +
+    "compensaciones, horas extras, feriados) — envíalo tal cual, UNA sola vez, sin insistir después. " +
+    "(b) Guardar respuestas: pasa SOLO lo que el cliente dijo en este mensaje, TAL CUAL lo escribió, en el campo " +
+    "que corresponda; todos son opcionales y puede venir una sola. Nada de esto es obligatorio ni bloquea la " +
+    "nómina, la capacitación ni el cierre.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      ofrecer: { type: "boolean" as const, description: "true = solo quiero el texto de la invitación para enviarlo." },
+      periodoPago: CAMPO_TEXTO("Período de pago y día de cierre, tal cual lo dijo."),
+      permisosGoceJustificanHoras: CAMPO_TEXTO("Si los permisos con goce justifican las horas no trabajadas."),
+      descuentoAtrasoAdelanto: CAMPO_TEXTO("Si descuentan atraso a la entrada y adelanto a la salida."),
+      colacion: CAMPO_TEXTO("Cómo es la colación (minutos/horario) y si se descuenta al pasarse."),
+      ausenciaSinPermisoNiMarca: CAMPO_TEXTO("Si un turno sin permiso ni marca cuenta como ausencia."),
+      compensaAtrasosConSalidas: CAMPO_TEXTO("Si los atrasos se compensan con salidas más tarde."),
+      compensaAdelantosConEntradas: CAMPO_TEXTO("Si los adelantos se compensan con entradas más temprano."),
+      compensacionExtrasPeriodo: CAMPO_TEXTO("Si las extras se compensan por día o por semana."),
+      extrasTodasAl50: CAMPO_TEXTO("Si todas las extras van al 50 % o hay otros recargos."),
+      trabajanFeriados: CAMPO_TEXTO("Si trabajan feriados y cómo se pagan."),
+      nota: CAMPO_TEXTO("Cualquier otra definición de su operación que el cliente haya contado y no calce arriba."),
+      loVeEnCapacitacion: {
+        type: "boolean" as const,
+        description: "true si el cliente dijo que prefiere ver estas definiciones en la capacitación.",
+      },
+    },
+  },
+} as const

@@ -202,8 +202,24 @@ export async function procesarNdvImp(contact: string): Promise<{ estado: string;
       } else {
         const m = await import("./implementacion-vicky")
         const ctx = await m.contextoImplementacionDesdeVenta(c)
+        // Si el chat ya dejó planificaciones, la implementación nace diciéndolo.
+        let planificaTurnos: "Sí" | "No sé" | undefined
+        let tipoPlanificacion: "Fijo" | "Desconocido" | undefined
+        try {
+          const { claveConfiguracion } = await import("./onboarding/fase")
+          const raw = await getKvValue(claveConfiguracion(c))
+          const cfg = raw ? (JSON.parse(raw) as { planificaciones?: unknown[] }) : null
+          if (Array.isArray(cfg?.planificaciones) && cfg!.planificaciones!.length > 0) {
+            planificaTurnos = "Sí"
+            tipoPlanificacion = "Fijo"
+          }
+        } catch {
+          /* defaults */
+        }
         const imp = await m.crearImplementacionGvAvanzado({
           ...ctx,
+          planificaTurnos,
+          tipoPlanificacion,
           razonSocial: job.empresa,
           rut: job.rut,
           companyId: job.companyId,
@@ -220,6 +236,12 @@ export async function procesarNdvImp(contact: string): Promise<{ estado: string;
             claveCapacitacion(c),
             JSON.stringify({ implementacionId: imp.id, numero: imp.numero || "", relator: imp.relator, empresa: job.empresa }),
           ).catch(() => {})
+          // Insight de la conversación (Diego/Ignacio, 07-sep): nota + campos
+          // Detalles / Dolor / Conversación WhatsApp en la implementación
+          // recién nacida. Segundo plano, best-effort.
+          import("./implementacion-insight")
+            .then((mi) => mi.sincronizarInsightImplementacion(c, { force: true, implementacionId: imp.id }))
+            .catch(() => null)
           await avisarEquipoInterno(
             `🛠️ IMPLEMENTACIÓN GV Avanzado creada para ${job.empresa} → ${imp.relator.nombre} (${imp.relator.email})${imp.numero ? ` · ${imp.numero}` : ""}` +
               (ndvLista

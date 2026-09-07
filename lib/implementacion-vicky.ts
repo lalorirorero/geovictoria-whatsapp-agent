@@ -81,7 +81,13 @@ export async function contextoImplementacionDesdeVenta(contact: string): Promise
         Contacto_Asociado?: { id?: string }
         Deal_Asociado?: { id?: string }
         Owner?: { id?: string; email?: string }
-        Detalle_Items_Cotizacion?: Array<{ Codigo_Item?: string | null; Categoria_Item?: string | null; Cantidad?: number | null }>
+        Detalle_Items_Cotizacion?: Array<{
+          Codigo_Item?: string | null
+          Categoria_Item?: string | null
+          Cantidad?: number | null
+          Es_Recurrente?: boolean | null
+          Subtotal_CLP?: number | null
+        }>
       }>
     }).data?.[0]
     // Método de marcaje y cantidad de relojes: las GV Avanzado humanas llenan
@@ -95,7 +101,16 @@ export async function contextoImplementacionDesdeVenta(contact: string): Promise
       .reduce((acc, f) => acc + Math.max(0, Number(f.Cantidad) || 0), 0)
     if (filas.length) {
       out.metodoMarcaje = relojes > 0 ? ["APP", "Box"] : ["APP"]
-      if (relojes > 0) out.equipos = relojes
+      // 0 explícito cuando no hay reloj: las humanas escriben Cantidad_de_equipos
+      // aunque sea 0 (brecha medida 07-sep contra 12 GV Avanzado).
+      out.equipos = relojes
+      // Facturación mensual del cliente en CLP NETO = suma de las líneas
+      // recurrentes de la cotización pagada (plan + arriendos). Es lo que las
+      // humanas escriben en Facturaci_n_Cliente (10 de 12), con moneda CLP.
+      const mensualClp = filas
+        .filter((f) => f.Es_Recurrente === true)
+        .reduce((acc, f) => acc + Math.max(0, Number(f.Subtotal_CLP) || 0), 0)
+      if (mensualClp > 0) out.facturacionMensualClp = Math.round(mensualClp)
     }
     if (q?.Cuenta_Asociada?.id) out.accountId = String(q.Cuenta_Asociada.id)
     if (q?.Contacto_Asociado?.id) out.contactId = String(q.Contacto_Asociado.id)
@@ -138,6 +153,95 @@ export type DatosImplementacion = {
   comentarios?: string
   /** Id de la empresa en la plataforma (GV Avanzado), el que devolvió la API del alta. */
   companyId?: string
+  /** Facturación mensual del cliente, CLP neto (suma de recurrentes de la cotización pagada). */
+  facturacionMensualClp?: number
+  /** Se_debe_planificar_turnos_GV: "Sí" (default humano, 11/12) o "No sé". */
+  planificaTurnos?: "Sí" | "No sé"
+  /** Tipo_de_Planificaci_n: "Fijo" si el chat dejó planificaciones; si no, "Desconocido". */
+  tipoPlanificacion?: "Fijo" | "Desconocido"
+}
+
+/**
+ * BRECHAS DE CREACIÓN (07-sep, tabla contra 12 GV Avanzado humanas — artifact
+ * 5956710a): las humanas escriben al crear, además de lo anterior, turnos /
+ * tipo de planificación / semáforo Verde / facturación mensual CLP + moneda /
+ * cantidad de equipos aunque sea 0. La de Vicky nacía sin los seis y el
+ * Score_Proyecto quedaba en 5 contra 11. Orden de Lalo: "cierra la brecha y
+ * déjalo implementado para las siguientes".
+ */
+export function camposBrechaCreacion(d: Pick<DatosImplementacion, "equipos" | "facturacionMensualClp" | "planificaTurnos" | "tipoPlanificacion">): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    Se_debe_planificar_turnos_GV: d.planificaTurnos || "Sí",
+    Tipo_de_Planificaci_n: d.tipoPlanificacion || "Desconocido",
+    Sem_foro_Implementaci_n: "Verde",
+    Cantidad_de_equipos: typeof d.equipos === "number" ? d.equipos : 0,
+  }
+  if (typeof d.facturacionMensualClp === "number" && d.facturacionMensualClp > 0) {
+    out.Facturaci_n_Cliente = d.facturacionMensualClp
+    out.Moneda_Facturaci_n_Futura = "CLP"
+  }
+  return out
+}
+
+/**
+ * Completa en una implementación YA creada los campos de creación que estén
+ * vacíos (retroactivo: IMP-11424 TESLA, IMP-11428 Molinas). No pisa nada que
+ * un humano haya escrito. Devuelve qué escribió.
+ */
+export async function completarBrechasCreacion(
+  implementacionId: string,
+  contact: string,
+): Promise<{ ok: boolean; escritos: string[]; error?: string }> {
+  try {
+    const token = await getZohoAccessToken()
+    const H = { Authorization: `Zoho-oauthtoken ${token}`, "Content-Type": "application/json" }
+    const campos = "Se_debe_planificar_turnos_GV,Tipo_de_Planificaci_n,Sem_foro_Implementaci_n,Facturaci_n_Cliente,Moneda_Facturaci_n_Futura,Cantidad_de_equipos,Tiene_Hardware"
+    const r = await fetch(`${API()}/crm/v3/Implementaciones/${implementacionId}?fields=${campos}`, { headers: H, cache: "no-store" })
+    const actual = ((await r.json().catch(() => ({}))) as { data?: Array<Record<string, unknown>> }).data?.[0] || {}
+    const ctx = await contextoImplementacionDesdeVenta(contact)
+    let planificaTurnos: "Sí" | "No sé" | undefined
+    let tipoPlanificacion: "Fijo" | "Desconocido" | undefined
+    try {
+      const { claveConfiguracion } = await import("./onboarding/fase")
+      const raw = await getKvValue(claveConfiguracion((contact || "").replace(/\D/g, "")))
+      const cfg = raw ? (JSON.parse(raw) as { planificaciones?: unknown[] }) : null
+      if (Array.isArray(cfg?.planificaciones) && cfg!.planificaciones!.length > 0) {
+        planificaTurnos = "Sí"
+        tipoPlanificacion = "Fijo"
+      }
+    } catch {
+      /* sin config: defaults */
+    }
+    const propuestos = camposBrechaCreacion({
+      equipos: ctx.equipos,
+      facturacionMensualClp: ctx.facturacionMensualClp,
+      planificaTurnos,
+      tipoPlanificacion,
+    })
+    const data: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(propuestos)) {
+      const vigente = actual[k]
+      const vacio = vigente === null || vigente === undefined || vigente === ""
+      if (vacio) data[k] = v
+    }
+    if (typeof ctx.equipos === "number" && (actual.Tiene_Hardware === null || actual.Tiene_Hardware === undefined)) {
+      data.Tiene_Hardware = ctx.equipos > 0
+    }
+    if (!Object.keys(data).length) return { ok: true, escritos: [] }
+    const put = await fetch(`${API()}/crm/v3/Implementaciones/${implementacionId}`, {
+      method: "PUT",
+      headers: H,
+      cache: "no-store",
+      body: JSON.stringify({ data: [data], trigger: ["blueprint"] }),
+    })
+    if (!put.ok) {
+      const cuerpo = await put.text().catch(() => "")
+      return { ok: false, escritos: [], error: `${put.status} ${cuerpo.slice(0, 300)}` }
+    }
+    return { ok: true, escritos: Object.keys(data) }
+  } catch (e) {
+    return { ok: false, escritos: [], error: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 /**
@@ -186,10 +290,10 @@ export async function crearImplementacionGvAvanzado(
   if (d.contactId) registro.Contacto = { id: d.contactId }
   if (d.ndvId) registro.Nota_de_Venta_Asociada = { id: d.ndvId }
   if (d.usuarios && d.usuarios > 0) registro.Cantidad_de_Usuarios_a_Implementar = d.usuarios
-  if (typeof d.equipos === "number") {
-    registro.Cantidad_de_equipos = d.equipos
-    registro.Tiene_Hardware = d.equipos > 0
-  }
+  // Turnos / tipo de planificación / semáforo / facturación CLP / equipos (0
+  // incluido): lo que las humanas escriben al crear y la nuestra no traía.
+  Object.assign(registro, camposBrechaCreacion(d))
+  registro.Tiene_Hardware = (typeof d.equipos === "number" ? d.equipos : 0) > 0
   if (d.metodoMarcaje?.length) registro.M_doto_Marcaje = d.metodoMarcaje
   if (d.correoSolicitante) registro.Correo_solicitante = d.correoSolicitante
   if (d.ejComercialId) registro.Ej_Comercial = { id: d.ejComercialId }
