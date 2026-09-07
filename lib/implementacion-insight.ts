@@ -8,13 +8,15 @@
  * definiciones de operación que necesita para configurar en la capacitación.
  *
  * Lo que deja en la Implementación, cada vez que se sincroniza:
- *   · `Detalles`                   → checklist DETERMINISTA de lo levantado y lo que falta
- *                                    (admin, nómina, turnos, planificaciones, capacitación,
- *                                    equipos, las 10 definiciones).
+ *   · `Comentarios_adicionales`    → el "insight" en una línea (estilo Diego) + el checklist
+ *                                    DETERMINISTA de lo levantado y lo que falta (admin,
+ *                                    nómina, turnos, planificaciones, capacitación, equipos,
+ *                                    las 10 definiciones). OJO: `Detalles` ("Detalles Req
+ *                                    Software") es de SOLO LECTURA en el módulo — probado
+ *                                    07-sep, el PUT lo ignora en silencio.
  *   · `Dolor_levantado_con_Cliente`→ resumen corto de la conversación (modelo, solo con lo
  *                                    que dijo el cliente; con fallback determinista).
- *   · `Comentarios_adicionales`    → el "insight" en una línea, estilo Diego.
- *   · `Conversaci_n_Whatsapp`      → URL del chat en Botmaker.
+ *   · `Conversaci_n_Whatsapp`      → URL del chat en Botmaker (texto de 255).
  *   · Nota "Insight de la conversación (Vicky)" → todo lo anterior + transcripción.
  *     Se ACTUALIZA (id en vic_kv), no se duplica.
  *
@@ -326,11 +328,10 @@ export async function sincronizarInsightImplementacion(
     const H = { Authorization: `Zoho-oauthtoken ${token}`, "Content-Type": "application/json" }
 
     const campos: Record<string, unknown> = {
-      Detalles: checklist.slice(0, 30000),
+      Comentarios_adicionales: `${insight}\n\n${checklist}`.slice(0, 30000),
       Dolor_levantado_con_Cliente: resumen.slice(0, 30000),
-      Comentarios_adicionales: insight.slice(0, 250),
     }
-    if (d.chatUrl) campos.Conversaci_n_Whatsapp = d.chatUrl
+    if (d.chatUrl) campos.Conversaci_n_Whatsapp = d.chatUrl.slice(0, 255)
     const put = await fetch(`${API()}/crm/v3/Implementaciones/${impId}`, {
       method: "PUT",
       headers: H,
