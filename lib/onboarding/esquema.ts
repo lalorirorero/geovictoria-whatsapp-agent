@@ -67,7 +67,7 @@ export function resumenEsquema(e: EsquemaOperacion): string {
   const lineas: string[] = []
   lineas.push(`Definiciones para la capacitación: ${resp.length}/${PREGUNTAS_ESQUEMA.length} respondidas por chat`)
   for (const p of resp) lineas.push(`  ✅ ${p.corta}: ${String(e[p.id]).trim()}`)
-  if (e.nota) lineas.push(`  📝 Otros: ${e.nota}`)
+  if (e.nota) lineas.push(`  • Otros: ${e.nota}`)
   if (pend.length) {
     lineas.push(
       `  ❌ Por definir en la capacitación${e.loVeEnCapacitacion ? " (el cliente prefirió verlo ahí)" : ""}: ` +

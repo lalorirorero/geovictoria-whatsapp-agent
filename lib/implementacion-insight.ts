@@ -190,16 +190,16 @@ export function checklistInsight(d: DatosInsight): string {
       ? `✅ Capacitación (Curso 1) agendada: ${d.cap.cuando || "fecha en Bookings"}${d.cap.relator ? ` con ${d.cap.relator.nombre}` : ""}`
       : `❌ Capacitación: sin agendar${d.cap?.relator ? ` (relator asignado: ${d.cap.relator.nombre})` : ""}`,
   )
-  L.push(`🧾 Vendido${d.numeroCotizacion ? ` (${d.numeroCotizacion})` : ""}: ${equiposVendidos(d.items)}`)
+  L.push(`• Vendido${d.numeroCotizacion ? ` (${d.numeroCotizacion})` : ""}: ${equiposVendidos(d.items)}`)
   const resp = respondidasEsquema(d.esquema)
   const pend = pendientesEsquema(d.esquema)
-  L.push(`📋 Definiciones para la capacitación: ${resp.length}/${PREGUNTAS_ESQUEMA.length} respondidas por chat`)
+  L.push(`• Definiciones para la capacitación: ${resp.length}/${PREGUNTAS_ESQUEMA.length} respondidas por chat`)
   for (const p of resp) L.push(`   ✅ ${p.corta}: ${String(d.esquema[p.id]).trim()}`)
-  if (d.esquema.nota) L.push(`   📝 Otros: ${d.esquema.nota}`)
+  if (d.esquema.nota) L.push(`   • Otros: ${d.esquema.nota}`)
   if (pend.length) {
     L.push(`   ❌ Por definir en la capacitación${d.esquema.loVeEnCapacitacion ? " (el cliente prefirió verlas ahí)" : ""}: ${pend.map((p) => p.corta).join(" · ")}`)
   }
-  if (d.chatUrl) L.push(`💬 Chat completo: ${d.chatUrl}`)
+  if (d.chatUrl) L.push(`• Chat completo: ${d.chatUrl}`)
   return L.join("\n")
 }
 
