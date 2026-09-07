@@ -1651,6 +1651,13 @@ async function processOneTurn(
     // turno o dejó en su borrador de alta son suyos, no inventados (E12
     // 05-sep: el alias egomez+vickydoce@ del admin salía como soporte@).
     const permitidos = emailsDirectorio()
+    // Toda persona real de la organización (usuarios activos de Zoho, con
+    // cache) — caso Conbes 07-sep: el directorio estático no tenía a Aracelli
+    // y su correo salió como soporte@. Best-effort: sin Zoho, solo directorio.
+    try {
+      const { emailsEquipoZoho } = await import("@/lib/emails-equipo")
+      for (const e of await emailsEquipoZoho()) permitidos.add(e)
+    } catch { /* fail-open */ }
     for (const m of String(message || "").match(/[a-z0-9._%+-]+@geovictoria\.com/gi) || []) permitidos.add(m.toLowerCase())
     if (enOnboarding) {
       try {

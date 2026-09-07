@@ -23,6 +23,13 @@ const DIRECTORIO_BASE: FichaEjecutivo[] = [
   { nombre: "Ana Paula López", email: "alopez@geovictoria.com", telefono: "+56 9 6647 4270" },
   { nombre: "Paola Díaz", email: "pdiaz@geovictoria.com", telefono: "+56 9 3932 1686" },
   { nombre: "Aleydis Araque", email: "aaraque@geovictoria.com", telefono: "+56 9 8291 6868" },
+  // 07-sep (caso Conbes, VB Lalo "confirmo el arreglo 3"): faltaban tres del
+  // roster CL — y el blindaje de soporte inventado reemplazaba sus correos por
+  // soporte@ ("su correo es soporte@geovictoria.com" en la reunión de
+  // Aracelli). Teléfonos = ficha de usuario de Zoho.
+  { nombre: "Aracelli Sepúlveda", email: "asepulveda@geovictoria.com", telefono: "+56 9 3212 5672" },
+  { nombre: "Daniela Gálvez", email: "dgalvez@geovictoria.com", telefono: "+56 9 2958 7913" },
+  { nombre: "Grey Meléndez", email: "gmelendez@geovictoria.com", telefono: "+56 9 3937 2060" },
   { nombre: "Mónica Mendoza", email: "mmendozav@geovictoria.com", telefono: "+51 962 277 502" },
 ]
 
