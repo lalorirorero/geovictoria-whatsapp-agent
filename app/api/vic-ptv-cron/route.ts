@@ -19,6 +19,7 @@
  */
 
 import { NextResponse } from "next/server"
+import { extraerDatosLeadDeChat } from "@/lib/extraer-datos-chat"
 import {
   ptvHabilitado,
   debeTraspasar,
@@ -208,43 +209,8 @@ async function putZoho(
   }
 }
 
-async function extraerDatosLeadDeChat(
-  dialogo: string,
-  apiKey: string,
-): Promise<{ nombre?: string; empresa?: string; email?: string; trabajadores?: number } | null> {
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 300,
-        system:
-          "Extrae datos del CLIENTE desde una conversación de ventas por WhatsApp. Responde SOLO un JSON válido con esta forma exacta: " +
-          '{"nombre": string|null, "empresa": string|null, "email": string|null, "trabajadores": number|null}. ' +
-          "Reglas: usa ÚNICAMENTE lo que el CLIENTE dijo explícitamente (nunca inventes ni infieras del contexto de Vicky); " +
-          "nombre = nombre de la persona (no de la empresa); trabajadores = cantidad de personas de su empresa si la dijo; " +
-          "null en todo campo que no aparezca claro. Sin texto adicional fuera del JSON.",
-        messages: [{ role: "user", content: dialogo }],
-      }),
-      cache: "no-store",
-    })
-    if (!res.ok) return null
-    const data = (await res.json().catch(() => ({}))) as { content?: Array<{ text?: string }> }
-    const texto = data?.content?.[0]?.text || ""
-    const m = texto.match(/\{[\s\S]*\}/)
-    if (!m) return null
-    const j = JSON.parse(m[0]) as Record<string, unknown>
-    return {
-      nombre: typeof j.nombre === "string" && j.nombre.trim() ? j.nombre.trim() : undefined,
-      empresa: typeof j.empresa === "string" && j.empresa.trim() ? j.empresa.trim() : undefined,
-      email: typeof j.email === "string" && /@/.test(j.email) ? j.email.trim() : undefined,
-      trabajadores: typeof j.trabajadores === "number" && j.trabajadores > 0 ? j.trabajadores : undefined,
-    }
-  } catch {
-    return null
-  }
-}
+// extraerDatosLeadDeChat vive en lib/extraer-datos-chat (compartido con el
+// traspaso y el hito por chat desde el 07-sep).
 
 /**
  * CONCILIACIÓN DE ESTADO DEL LEAD CONTRA LA CONVERSACIÓN (Eduardo 14-ago).
@@ -1101,6 +1067,9 @@ async function asignarEnZoho(
   // Escalera de roles (12-ago): con precio mostrado el lead va a la tómbola
   // de CALIFICADOS (ejecutivos); sin precio, a la de SDR sin calificar.
   calificado = false,
+  // Segunda pasada tras crear el registro desde el chat (arreglo 1, 07-sep):
+  // evita el bucle si el hito no dejó lead.
+  segundaPasada = false,
 ): Promise<VendedorFinal> {
   const porDefecto: VendedorFinal = {
     ...interno,
@@ -1144,6 +1113,34 @@ async function asignarEnZoho(
       // todo lo demás va como LEAD a los SDR Inbound MX, con nota de la
       // conversación (URL directa a Botmaker + transcript).
       const esMX = pais === "mx"
+      // ARREGLO 1 (Lalo 07-sep, casos Conbes y Diego): antes de crear un lead
+      // CIEGO se lee lo que el chat YA dijo (nombre, empresa, dotación, RUT,
+      // correo) y se pasa por el hito de intención — la MISMA escalera del
+      // CRM: RUT + >20 → deal + Tómbola Deals; dotación conocida → lead
+      // calificado (la segunda pasada lo encuentra y lo entrega a la regla
+      // TLMK, no a las SDR); sin nada → lead ciego como siempre.
+      if (esCL && !segundaPasada) {
+        try {
+          const { datosDelChat } = await import("@/lib/extraer-datos-chat")
+          const chat = await datosDelChat(fono)
+          if (chat.tieneAlgo) {
+            const { sincronizarHitoCrm } = await import("@/lib/crm-hitos")
+            await sincronizarHitoCrm(fono, "intencion", {
+              nombre: chat.nombre,
+              empresa: chat.empresa,
+              email: chat.email,
+              rut: chat.rut,
+              empleados: chat.empleados,
+            })
+            console.log(
+              `[ptv] ${fono}: sin lead al traspasar — registro creado desde el chat (empleados=${chat.empleados ?? "?"}, rut=${chat.rut || "-"}); segunda pasada`,
+            )
+            return await asignarEnZoho(contact, pais, interno, calificado || (chat.empleados || 0) > 0, true)
+          }
+        } catch (e) {
+          console.warn(`[ptv] ${fono}: lectura del chat para el traspaso falló — lead ciego:`, e instanceof Error ? e.message : e)
+        }
+      }
       const creado = await createZohoLead({
         nombre: "Prospecto WhatsApp",
         empresa: `Por identificar (WhatsApp +${fono})`,

@@ -638,6 +638,15 @@ async function processOneTurn(
 
     let reply = (result.reply || "").trim()
 
+    // HITO DE INTENCIÓN SIN TOOL (arreglo 2, Lalo 07-sep, caso Conbes): con
+    // RUT del cliente en el chat, el CRM nace ya — no espera a que Vicky
+    // llame una tool. Best-effort en paralelo; una vez por conversación.
+    if (!enOnboarding && contact.startsWith("56")) {
+      void import("@/lib/hito-por-chat")
+        .then((m) => m.hitoIntencionDesdeChat(contact))
+        .catch(() => undefined)
+    }
+
     // Guardrail de largo del ONBOARDING (Lalo 24-ago): mismo espíritu de la
     // vendedora ("mensajes cortos de WhatsApp") pero determinista — si el
     // modelo se explaya confirmando fichas o reportando nóminas, el canal
