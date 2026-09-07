@@ -136,7 +136,20 @@ function enVentanaHoraria(contact: string): boolean {
  */
 export async function evaluarGateProactividad(
   contact: string,
-  opts: { tipo: "texto" | "plantilla" | "media"; plantilla?: string } = { tipo: "texto" },
+  opts: {
+    tipo: "texto" | "plantilla" | "media"
+    plantilla?: string
+    /**
+     * Envío TRANSACCIONAL (07-sep, caso TESLA AUSTRAL): el cliente acaba de
+     * PAGAR y el mensaje es la consecuencia directa de su acción (bienvenida
+     * post-pago, formulario de alta). No es proactividad comercial: el gate
+     * lo registra (sello + bitácora) pero JAMÁS lo bloquea. Sin esto, el
+     * anti-ráfaga bloqueó 3 veces el formulario de alta porque la
+     * presentación del traspaso había salido 8 minutos antes, y un cliente
+     * que pagó se quedó sin su cuenta hasta que alguien lo re-disparó a mano.
+     */
+    transaccional?: boolean
+  } = { tipo: "texto" },
 ): Promise<GateDecision> {
   const pasa: GateDecision = { permitir: true, motivos: [], reactivo: false }
   if (gateApagado()) return pasa
@@ -206,7 +219,7 @@ export async function evaluarGateProactividad(
     // haríamos. Para ellos el gate queda en sombra permanente.
     const { metricsContactSet } = await import("./funnel-analysis")
     const esProbadorInterno = isTestContact(clean, metricsContactSet())
-    const bloquear = !esProbadorInterno && (await enforceEncendido()) && motivos.length > 0
+    const bloquear = !esProbadorInterno && !opts.transaccional && (await enforceEncendido()) && motivos.length > 0
     if (!bloquear) {
       void supa(`vic_kv?on_conflict=key`, {
         method: "POST",
@@ -242,6 +255,7 @@ export async function evaluarGateProactividad(
             motivos,
             enforce: bloquear,
             probador: esProbadorInterno || undefined,
+            transaccional: opts.transaccional || undefined,
             at: new Date().toISOString(),
           }),
           expires_at: new Date(Date.now() + 7 * 86400e3).toISOString(),
@@ -249,7 +263,7 @@ export async function evaluarGateProactividad(
       }).catch(() => undefined)
       console.warn(
         `[gate-proactividad] ${clean} (${opts.tipo}${opts.plantilla ? `:${opts.plantilla}` : ""}) → ${
-          bloquear ? "BLOQUEADO" : "sombra"
+          bloquear ? "BLOQUEADO" : opts.transaccional ? "transaccional, pasa" : "sombra"
         }: ${motivos.join(", ")}`,
       )
     }

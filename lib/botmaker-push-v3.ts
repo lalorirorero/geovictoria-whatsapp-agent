@@ -170,6 +170,9 @@ export async function sendBotmakerMessage(
   // Multi-país: channelId de la línea por la que responder. Default: línea
   // Chile (BOTMAKER_CHANNEL_V3), compatible con todos los llamadores actuales.
   channelId?: string,
+  // transaccional: consecuencia directa de una acción del cliente (pagó) —
+  // el gate lo registra pero no lo bloquea. Ver evaluarGateProactividad.
+  opts: { transaccional?: boolean } = {},
 ): Promise<boolean> {
   if (!contactId || !text) {
     console.error("[botmaker-push] contactId y text son requeridos")
@@ -207,7 +210,7 @@ export async function sendBotmakerMessage(
   // registra; con GATE_ENFORCE=1 bloquea. Fail-open interno — jamás lanza.
   {
     const { evaluarGateProactividad } = await import("./gate-proactividad")
-    const gate = await evaluarGateProactividad(cleanContact, { tipo: "texto" })
+    const gate = await evaluarGateProactividad(cleanContact, { tipo: "texto", transaccional: opts.transaccional })
     if (!gate.permitir) return false
   }
 
@@ -418,6 +421,9 @@ export async function sendBotmakerTemplate(
   // Multi-país: channelId (ej. PERFIL_CO.canal.channelId) o número de la línea
   // por la que debe salir la plantilla. Default: la línea chilena, como siempre.
   channelId?: string,
+  // transaccional: ver sendBotmakerMessage — el kickoff del alta post-pago
+  // y la bienvenida de pago no son proactividad y el gate no los frena.
+  opts: { transaccional?: boolean } = {},
 ): Promise<boolean> {
   if (!BM_TOKEN) {
     console.error("[botmaker-template] BOTMAKER_ACCESS_TOKEN no configurado")
@@ -450,7 +456,7 @@ export async function sendBotmakerTemplate(
   // proactivo por excelencia — acá vive también el anti-repetición de HSM.
   {
     const { evaluarGateProactividad } = await import("./gate-proactividad")
-    const gate = await evaluarGateProactividad(cleanContact, { tipo: "plantilla", plantilla: templateName })
+    const gate = await evaluarGateProactividad(cleanContact, { tipo: "plantilla", plantilla: templateName, transaccional: opts.transaccional })
     if (!gate.permitir) return false
   }
   try {

@@ -28,6 +28,10 @@ import { pagoCierraLoop } from "./loop-v2"
 import { claveFase, claveBorrador } from "./onboarding/fase"
 import { onboardingActivoPara } from "./onboarding-piloto"
 import { entregarKickoffOnboarding } from "./onboarding-envio"
+
+// Los mensajes POST-PAGO son transaccionales (07-sep): el gate de proactividad
+// los registra pero no los bloquea. Ver evaluarGateProactividad.
+const TRANSACCIONAL = { transaccional: true } as const
 import { parsearBorrador, sembrarBorrador, type Borrador } from "./onboarding/borrador"
 
 export type ResultadoTraspaso = {
@@ -150,11 +154,47 @@ async function asignarVentaAutonoma(
     const H = { Authorization: `Zoho-oauthtoken ${token}`, "Content-Type": "application/json" }
     const quoteModule = (process.env.ZOHO_QUOTE_MODULE || "Cotizaciones_GeoVictoria").trim()
     // El deal se resuelve ANTES de decidir: el chequeo de gestión lo necesita.
-    const fonoDeal = contact.replace(/\D/g, "")
-    const sLead = await fetch(`${api}/crm/v3/Leads/search?phone=${fonoDeal}&converted=both&per_page=3`, { headers: H, cache: "no-store" })
-    const dealIdPre = sLead.ok && sLead.status !== 204
-      ? ((await sLead.json().catch(() => ({}))) as { data?: Array<{ Converted_Deal?: { id?: string } | null }> }).data?.find((l) => l.Converted_Deal?.id)?.Converted_Deal?.id
+    // FUENTE 1 = el Deal_Asociado de la cotización PAGADA: ese es el deal de
+    // ESTA venta. FUENTE 2 (solo si la cotización no lo trae) = el deal
+    // convertido del lead del teléfono, saltando los CERRADOS. Cicatriz
+    // TESLA AUSTRAL (07-sep): la búsqueda por fono devolvió un deal en Cierre
+    // Perdido de julio (otro ejecutivo, con notas) en vez del deal nuevo de la
+    // cotización; la venta 100% Vicky quedó juzgada "ASISTIDA" y sin asignar.
+    const gQuote = await fetch(
+      `${api}/crm/v3/${quoteModule}/${quoteId}?fields=Deal_Asociado,Cuenta_Asociada,Contacto_Asociado`,
+      { headers: H, cache: "no-store" },
+    )
+    const filaQuote = gQuote.ok
+      ? ((await gQuote.json().catch(() => ({}))) as {
+          data?: Array<{
+            Deal_Asociado?: { id?: string } | null
+            Cuenta_Asociada?: { id?: string } | null
+            Contacto_Asociado?: { id?: string } | null
+          }>
+        }).data?.[0]
       : undefined
+    let dealIdPre: string | undefined = filaQuote?.Deal_Asociado?.id ? String(filaQuote.Deal_Asociado.id) : undefined
+    if (!dealIdPre) {
+      const fonoDeal = contact.replace(/\D/g, "")
+      const sLead = await fetch(`${api}/crm/v3/Leads/search?phone=${fonoDeal}&converted=both&per_page=5`, { headers: H, cache: "no-store" })
+      const candidatos = sLead.ok && sLead.status !== 204
+        ? (((await sLead.json().catch(() => ({}))) as { data?: Array<{ Converted_Deal?: { id?: string } | null }> }).data || [])
+            .map((l) => l.Converted_Deal?.id)
+            .filter((id): id is string => Boolean(id))
+        : []
+      for (const cand of candidatos) {
+        const gD = await fetch(`${api}/crm/v3/Deals/${cand}?fields=Stage`, { headers: H, cache: "no-store" }).catch(() => null)
+        const stage = gD && gD.ok && gD.status === 200
+          ? String(((await gD.json().catch(() => ({}))) as { data?: Array<{ Stage?: string }> }).data?.[0]?.Stage || "")
+          : ""
+        if (/cierre perdido/i.test(stage)) {
+          console.log(`[postpago] deal ${cand} del fono ${fonoDeal} está en ${stage} — no cuenta para la venta ${quoteId}`)
+          continue
+        }
+        dealIdPre = String(cand)
+        break
+      }
+    }
     let traspasoSinGestion = false
     if (ptvActivo) {
       const gestiono = dealIdPre ? await hayGestionEnDeal(String(dealIdPre), H, api) : false
@@ -186,15 +226,6 @@ async function asignarVentaAutonoma(
     // La cotización, y de ella la cuenta y el contacto asociados ("todos los
     // registros", Lalo 04-ago). El lead convertido no se toca: Zoho no
     // permite editar leads ya convertidos.
-    const gQuote = await fetch(
-      `${api}/crm/v3/${quoteModule}/${quoteId}?fields=Cuenta_Asociada,Contacto_Asociado`,
-      { headers: H, cache: "no-store" },
-    )
-    const filaQuote = gQuote.ok
-      ? ((await gQuote.json().catch(() => ({}))) as {
-          data?: Array<{ Cuenta_Asociada?: { id?: string } | null; Contacto_Asociado?: { id?: string } | null }>
-        }).data?.[0]
-      : undefined
     await fetch(`${api}/crm/v3/${quoteModule}`, {
       method: "PUT",
       headers: H,
@@ -584,7 +615,7 @@ export async function cerrarYTraspasarPostPago(
     const abierta2 = Boolean(ultimo2) && Date.now() - (ultimo2 as Date).getTime() < 24 * 3600e3
     let salio = false
     if (abierta2) {
-      salio = await sendBotmakerMessage(contact, corto).catch(() => false)
+      salio = await sendBotmakerMessage(contact, corto, undefined, TRANSACCIONAL).catch(() => false)
       if (salio) await appendAssistantV3(contact, corto, "cl").catch(() => {})
     }
     if (!salio && !esCO && !esMX) {
@@ -594,6 +625,8 @@ export async function cerrarYTraspasarPostPago(
         contact,
         PLANTILLA_BIENVENIDA_PAGO_CL.name,
         paramsBienvenidaPago(linkNuevo, null),
+        undefined,
+        TRANSACCIONAL,
       ).catch(() => false)
     }
     if (!salio) return { contact, traspaso: "push_fallo" }
@@ -631,6 +664,7 @@ export async function cerrarYTraspasarPostPago(
       contact,
       traspaso,
       esCO ? PERFIL_CO.canal.channelId : undefined,
+      TRANSACCIONAL,
     ).catch(() => false)
     if (pushed) {
       await setKvValue(kvKey, new Date().toISOString()).catch(() => {})
@@ -659,6 +693,8 @@ export async function cerrarYTraspasarPostPago(
     contact,
     PLANTILLA_BIENVENIDA_PAGO_CL.name,
     paramsBienvenidaPago(linkOnboarding, quienPresenta),
+    undefined,
+    TRANSACCIONAL,
   ).catch(() => false)
   if (okTpl) {
     await setKvValue(kvKey, new Date().toISOString()).catch(() => {})

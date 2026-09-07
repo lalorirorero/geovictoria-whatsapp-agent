@@ -19,6 +19,12 @@ import {
   renderPlantillaOnboarding,
 } from "./onboarding/plantilla"
 
+// El kickoff del alta es TRANSACCIONAL (07-sep, caso TESLA AUSTRAL): el
+// cliente acaba de pagar y este mensaje es la consecuencia directa. El gate de
+// proactividad lo registra pero no lo bloquea — el anti-ráfaga (la presentación
+// del traspaso salió minutos antes) dejó a un pagador sin formulario de alta.
+const TRANSACCIONAL = { transaccional: true } as const
+
 /**
  * Entrega el kickoff del onboarding respetando la ventana de 24 h de WhatsApp.
  *
@@ -85,11 +91,11 @@ export async function entregarKickoffOnboarding(
         console.warn(`[onboarding-envio] siembra de variables alta_* falló para ${contact}:`, e instanceof Error ? e.message : e)
       }
       const { PLANTILLA_ALTA_QR_CL } = await import("./onboarding/plantilla")
-      const okQr = await sendBotmakerTemplate(contact, PLANTILLA_ALTA_QR_CL.name, params).catch(() => false)
+      const okQr = await sendBotmakerTemplate(contact, PLANTILLA_ALTA_QR_CL.name, params, undefined, TRANSACCIONAL).catch(() => false)
       if (okQr) return { via: "flow", texto: "" }
       console.warn(`[onboarding-envio] plantilla QR falló para ${contact}; se intenta la plantilla FLOW`)
     }
-    const okFlow = await sendBotmakerTemplate(contact, PLANTILLA_ALTA_FLOW_CL.name, params).catch(() => false)
+    const okFlow = await sendBotmakerTemplate(contact, PLANTILLA_ALTA_FLOW_CL.name, params, undefined, TRANSACCIONAL).catch(() => false)
     if (okFlow) return { via: "flow", texto: "" }
     console.warn(`[onboarding-envio] plantilla flow falló para ${contact}; kickoff clásico de respaldo`)
   }
@@ -99,7 +105,7 @@ export async function entregarKickoffOnboarding(
   const ultimo = await getLastUserAt(contact).catch(() => null)
   const abierta = !!ultimo && Date.now() - ultimo.getTime() < 24 * 3600e3
   if (abierta) {
-    const ok = await sendBotmakerMessage(contact, texto).catch(() => false)
+    const ok = await sendBotmakerMessage(contact, texto, undefined, TRANSACCIONAL).catch(() => false)
     if (ok) return { via: "texto", texto }
     // La ventana pudo cerrarse entre la consulta y el envío: se reintenta por
     // plantilla antes de darlo por perdido.
@@ -108,6 +114,8 @@ export async function entregarKickoffOnboarding(
     contact,
     PLANTILLA_ONBOARDING_CL.name,
     params,
+    undefined,
+    TRANSACCIONAL,
   ).catch(() => false)
   return { via: ok ? "plantilla" : "fallo", texto }
 }
