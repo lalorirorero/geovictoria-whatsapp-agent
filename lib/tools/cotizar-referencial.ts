@@ -720,16 +720,16 @@ export async function cotizarReferencial(args: {
     partes.push("")
     if (instalacionGratisTotal) {
       partes.push(
-        "📌 La instalación por nuestro equipo técnico va INCLUIDA sin costo (arriendo en la Región Metropolitana): coordinamos la visita cuando llegue el reloj. Y si prefieres montarlo tú, también es simple y te guiamos paso a paso — tú eliges.",
+        "📌 La instalación por nuestro equipo técnico va INCLUIDA sin costo (arriendo en la Región Metropolitana). Así funciona: pagas, tu cuenta queda activa dentro de 24 horas hábiles y tu equipo ya puede marcar con la app; el reloj se despacha apenas se confirma el pago y el equipo técnico te contacta para agendar la visita. Si prefieres montarlo tú, es simple y te guiamos paso a paso — tú eliges.",
       )
     } else if (instalacionTecnicoUF > 0) {
       const instCLP = Math.round(instalacionTecnicoUF * (1 + IVA_RATE) * ufActual)
       partes.push(
-        `📌 La instalación del reloj viene considerada por tu cuenta: es simple y te guiamos paso a paso. Si prefieres que la haga nuestro equipo técnico, tiene un cobro único de ${fmtUF(instalacionTecnicoUF)} UF + IVA (aprox. $${fmtNumCL(instCLP, 0)}) — me dices y te lo agrego.`,
+        `📌 La instalación del reloj viene considerada por tu cuenta: es simple y te guiamos paso a paso. Tu cuenta queda activa dentro de 24 horas hábiles del pago, así que tu equipo parte marcando con la app mientras el reloj va en camino. Si prefieres que la instale nuestro equipo técnico, tiene un cobro único de ${fmtUF(instalacionTecnicoUF)} UF + IVA (aprox. $${fmtNumCL(instCLP, 0)}) — me dices y te lo agrego.`,
       )
     } else {
       partes.push(
-        "📌 La instalación del reloj viene considerada por tu cuenta: es simple y te guiamos paso a paso. Si prefieres que la haga nuestro equipo técnico, tiene un cobro único según la comuna — me dices y te lo agrego.",
+        "📌 La instalación del reloj viene considerada por tu cuenta: es simple y te guiamos paso a paso. Tu cuenta queda activa dentro de 24 horas hábiles del pago, así que tu equipo parte marcando con la app mientras el reloj va en camino. Si prefieres que la instale nuestro equipo técnico, tiene un cobro único según la comuna — me dices y te lo agrego.",
       )
     }
   }
