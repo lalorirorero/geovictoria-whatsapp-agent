@@ -50,6 +50,8 @@ import {
   resumenConfiguracion,
   type Configuracion,
   type TurnoCfg,
+  normalizarFechaDesde,
+  hoyChileISO,
 } from "./onboarding/configuracion"
 import { promptConfiguracionCL } from "./onboarding/prompt"
 import {
@@ -504,14 +506,22 @@ export async function armarOnboarding(contact: string): Promise<{
         ? cfg.trabajadores.map((t) => t.rut).filter(Boolean)
         : (a.rutsTrabajadores || []).filter(Boolean)
       if (!ruts.length) return { ok: false, error: "Sin trabajadores a asignar (¿todos=true o lista de RUTs?)." }
+      // "desde hoy" tiene que ser HOY (caso Haus 07-sep: quedó 2025-01-07).
+      const { fecha: desde, ajustada } = normalizarFechaDesde(a.desde, hoyChileISO())
       for (const rut of ruts) {
         const idx = cfg.asignaciones.findIndex((x) => compacto(x.rutTrabajador) === compacto(rut))
-        const fila = { rutTrabajador: rut, planificacion: a.planificacion, desde: a.desde, hasta: a.hasta }
+        const fila = { rutTrabajador: rut, planificacion: a.planificacion, desde, hasta: a.hasta }
         if (idx >= 0) cfg.asignaciones[idx] = fila
         else cfg.asignaciones.push(fila)
       }
       await guardarConfig(cfg)
-      return { ok: true, asignados: ruts.length, ...estadoConfig(cfg) }
+      return {
+        ok: true,
+        asignados: ruts.length,
+        desde,
+        ...(ajustada ? { nota: `La fecha de inicio se dejó en ${desde} (hoy): la que venía no era válida o era de otro año. Repite ESA fecha al cliente.` } : {}),
+        ...estadoConfig(cfg),
+      }
     }
     if (name === TOOL_CONFIRMAR_CONFIGURACION.name) {
       const confirmado = (input as { confirmacion_explicita?: boolean })?.confirmacion_explicita
@@ -843,6 +853,7 @@ export async function armarOnboarding(contact: string): Promise<{
           const capRaw = await getKvValue(claveCapacitacion(contact)).catch(() => null)
           const nombreRelator = capRaw ? (JSON.parse(capRaw) as { relator?: { nombre?: string } }).relator?.nombre : undefined
           return promptConfiguracionCL({
+            hoy: hoyChileISO(),
             resumen: resumenConfiguracion(cfg),
             pendientes: faltas.map((f) => f.mensaje),
             nTrabajadores: cfg.trabajadores.length,

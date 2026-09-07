@@ -367,3 +367,32 @@ export function resumenConfiguracion(cfg: Configuracion): string {
   if (cfg.asignaciones.length) lineas.push(`Asignaciones: ${cfg.asignaciones.length}`)
   return lineas.join("\n")
 }
+
+/**
+ * Normaliza el "desde" de una asignación contra la fecha de HOY (caso Haus
+ * 07-sep-2026: el cliente dijo "desde hoy 7 de septiembre" y el modelo guardó
+ * 2025-01-07 porque no sabía en qué día estaba). Reglas, en orden:
+ *   1. vacío, "hoy", "ahora", "desde ya" o algo que no es YYYY-MM-DD → hoy.
+ *   2. mismo mes-día que hoy pero OTRO año → hoy (el error típico del modelo).
+ *   3. más de 90 días en el pasado → hoy (nadie planifica retroactivo tan atrás).
+ *   4. si no, se respeta tal cual (una fecha futura o reciente es legítima).
+ * Devuelve la fecha final y si hubo ajuste, para que la tool lo declare.
+ */
+export function normalizarFechaDesde(desde: string | undefined, hoyISO: string): { fecha: string; ajustada: boolean } {
+  const crudo = String(desde || "").trim().toLowerCase()
+  if (!crudo || /^(hoy|ahora|desde ya|de inmediato|inmediato)$/.test(crudo)) return { fecha: hoyISO, ajustada: crudo !== "" }
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(crudo)
+  if (!m) return { fecha: hoyISO, ajustada: true }
+  const [hy, hm, hd] = hoyISO.split("-").map(Number)
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
+  if (y !== hy && mo === hm && d === hd) return { fecha: hoyISO, ajustada: true }
+  const dias = (Date.UTC(hy, hm - 1, hd) - Date.UTC(y, mo - 1, d)) / 86_400_000
+  if (dias > 90) return { fecha: hoyISO, ajustada: true }
+  return { fecha: crudo, ajustada: false }
+}
+
+/** YYYY-MM-DD de hoy en Chile (la única zona que le importa al onboarding CL). */
+export function hoyChileISO(ahora: Date = new Date()): string {
+  const f = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santiago", year: "numeric", month: "2-digit", day: "2-digit" })
+  return f.format(ahora)
+}

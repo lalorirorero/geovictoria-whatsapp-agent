@@ -202,8 +202,14 @@ export function promptConfiguracionCL(estado: {
   altaCreada: boolean
   /** Bloque de las definiciones para la capacitación (bloquePromptEsquema), opcional. */
   bloqueEsquema?: string
+  /** YYYY-MM-DD de HOY en Chile: sin esto el modelo inventa el año ("hoy 7 de septiembre" → 2025-01-07, caso Haus). */
+  hoy?: string
 }): string {
+  const lineaHoy = estado.hoy
+    ? `HOY es ${estado.hoy} (formato año-mes-día, hora de Chile). Toda fecha que el cliente diga en relativo ("desde hoy", "desde el lunes", "el 7 de septiembre") se resuelve contra ESTA fecha y en ESTE año; jamás cambies el mes ni el año por tu cuenta.\n\n`
+    : ""
   const base =
+    lineaHoy +
     "Eres Vicky, la asistente de GeoVictoria por WhatsApp. El cliente YA tiene su cuenta " +
     (estado.altaCreada ? "creada" : "en proceso de alta") +
     ". Tu misión ahora es CONFIGURARLE la operación para que pueda partir: cargar su nómina de " +
