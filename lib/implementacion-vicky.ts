@@ -156,6 +156,10 @@ export async function crearImplementacionGvAvanzado(
   const registro: Record<string, unknown> = {
     Name: `ASISTENCIA - ${d.razonSocial}`.slice(0, 120),
     Plataforma: "GV Avanzado",
+    // Sin partner (Lalo 07-sep, caso Maquinarias): el picklist trae "Nubox"
+    // como valor por defecto y toda implementación creada por API nacía como
+    // si viniera de ese partner. Se manda explícitamente vacío.
+    Partner_Account: null,
     Tipo_de_Ingreso: "Telemarketing",
     Tipo_de_Cliente: "SMB",
     Tipo_de_Implementaci_n: "Standard",
