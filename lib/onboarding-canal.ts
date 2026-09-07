@@ -209,7 +209,9 @@ export async function armarOnboarding(contact: string): Promise<{
           | null
         const d = r?.response?.returnvalue?.data
         const lista = Array.isArray(d) ? d : d ? [d] : []
-        return lista.flat().map((x) => String(x)).filter(Boolean)
+        // Bookings responde el TEXTO "Slots Not Available" cuando el día no
+        // tiene cupos (visto 07-sep con Ignacio): solo pasan strings con hora.
+        return lista.flat().map((x) => String(x).trim()).filter((x) => /\d{1,2}:\d{2}/.test(x))
       }
 
       if (name === TOOL_VER_CUPOS_CAPACITACION.name) {
