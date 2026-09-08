@@ -2647,12 +2647,16 @@ async function reconciliarSdrCalificados(ahora: Date): Promise<{ revisados: numb
   }
   let chatsLeidos = 0
   // ── Leads vivos del roster SDR ──
-  const leads = await coql<{ id: string; Phone?: string; Lead_Status?: string; N_Empleados_que_marcan?: number; RUT_Empresa?: string; "Owner.email"?: string; First_Name?: string; Company?: string }>(
-    `select id, Phone, Lead_Status, N_Empleados_que_marcan, RUT_Empresa, Owner.email, First_Name, Company from Leads ` +
+  // SOLO registros que NACIERON del canal de Vicky: lo que las SDR crean a
+  // mano (sus propios deals enterprise, sus leads) no es de esta conciliación.
+  const VICKY_ID = "3525045000484500876"
+  const leads = await coql<{ id: string; Phone?: string; Lead_Status?: string; N_Empleados_que_marcan?: number; RUT_Empresa?: string; "Owner.email"?: string; First_Name?: string; Company?: string; Created_By?: { id?: string } | null }>(
+    `select id, Phone, Lead_Status, N_Empleados_que_marcan, RUT_Empresa, Owner.email, First_Name, Company, Created_By from Leads ` +
       `where ((Owner.email in (${lista}) and Converted__s = false) and Created_Time >= '${desde}') limit 60`,
   )
   for (const l of leads) {
     if (out.reenviados >= 4) break
+    if (String(l.Created_By?.id || "") !== VICKY_ID) continue
     const status = String(l.Lead_Status || "")
     if (/no calificado/i.test(status)) continue
     const fono = String(l.Phone || "").replace(/\D/g, "")
@@ -2726,12 +2730,17 @@ async function reconciliarSdrCalificados(ahora: Date): Promise<{ revisados: numb
     }
   }
   // ── Deals vivos del roster SDR (lead calificado que ya convirtió) ──
-  const deals = await coql<{ id: string; Deal_Name?: string; Stage?: string; N_Empleados_que_marcan?: number; "Owner.email"?: string; "Contact_Name.Phone"?: string }>(
-    `select id, Deal_Name, Stage, N_Empleados_que_marcan, Owner.email, Contact_Name.Phone from Deals ` +
-      `where ((Owner.email in (${lista}) and Created_Time >= '${desde}') and Stage not in ('Cierre Perdido','7. Implementando','8. Facturando')) limit 40`,
+  // Deals: solo los de Vicky, de las últimas 48 h y en etapas 1-4 — un deal
+  // en "6. Listo para Cierre" ya aceptó/pagó (venta autónoma → Aleydis es
+  // legítima) y los movidos a mano por Lalo (OMEGA/TRAMUS 02-sep) no se tocan.
+  const desde48 = new Date(ahora.getTime() - 48 * 3600_000).toISOString().replace(/\.\d{3}Z$/, "+00:00")
+  const deals = await coql<{ id: string; Deal_Name?: string; Stage?: string; N_Empleados_que_marcan?: number; "Owner.email"?: string; "Contact_Name.Phone"?: string; Created_By?: { id?: string } | null }>(
+    `select id, Deal_Name, Stage, N_Empleados_que_marcan, Owner.email, Contact_Name.Phone, Created_By from Deals ` +
+      `where ((Owner.email in (${lista}) and Created_Time >= '${desde48}') and Stage in ('1. Trato Creado','2. Primera Reunion Realizada','3. En Levantamiento','4. Propuesta Enviada / En Negociación')) limit 40`,
   )
   for (const d of deals) {
     if (out.reenviados >= 4) break
+    if (String(d.Created_By?.id || "") !== VICKY_ID) continue
     if (await getKvValue(`sdr_recon_deal_${d.id}`).catch(() => null)) continue
     const fono = String(d["Contact_Name.Phone"] || "").replace(/\D/g, "")
     if (!fono || !fono.startsWith("56") || isTestContact(fono, tests)) continue
