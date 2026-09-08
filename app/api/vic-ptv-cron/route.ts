@@ -2745,6 +2745,24 @@ async function reconciliarSdrCalificados(ahora: Date): Promise<{ revisados: numb
     const fono = String(d["Contact_Name.Phone"] || "").replace(/\D/g, "")
     if (!fono || !fono.startsWith("56") || isTestContact(fono, tests)) continue
     out.revisados++
+    // CLIENTE EXISTENTE (caso Samuel/Onecup 08-sep: cliente con reloj sin
+    // marcaciones pidió "un agente", el traspaso lo tomó como venta y esta
+    // conciliación lo re-sorteó a Paola). Cuenta "3. Cliente/Facturando" o con
+    // usuarios activos = soporte, no venta: se deja donde está y se avisa.
+    try {
+      const gd = await fetch(`${api}/crm/v3/Deals/${d.id}?fields=Account_Name`, { headers: H, cache: "no-store" })
+      const accId = (((await gd.json().catch(() => ({}))) as { data?: Array<{ Account_Name?: { id?: string } | null }> }).data?.[0]?.Account_Name?.id) || ""
+      if (accId) {
+        const ga = await fetch(`${api}/crm/v3/Accounts/${accId}?fields=Account_Name,Estado_Cuenta,Empresa_con_usuarios_activos`, { headers: H, cache: "no-store" })
+        const acc = ((await ga.json().catch(() => ({}))) as { data?: Array<{ Account_Name?: string; Estado_Cuenta?: string | null; Empresa_con_usuarios_activos?: boolean }> }).data?.[0]
+        if (acc && (String(acc.Estado_Cuenta || "").startsWith("3.") || acc.Empresa_con_usuarios_activos === true)) {
+          await setKvValue(`sdr_recon_deal_${d.id}`, "cliente_existente").catch(() => {})
+          out.detalle.push(`+${fono} deal ${d.id}: cuenta ${acc.Account_Name} es CLIENTE (${acc.Estado_Cuenta || "usuarios activos"}) — no se re-sortea, es soporte`)
+          await avisarEquipoInterno(`🛠️ CLIENTE EXISTENTE en el circuito de venta: +${fono} (${acc.Account_Name}) tiene deal "${d.Deal_Name || d.id}" con ${d["Owner.email"]}. Es cuenta ${acc.Estado_Cuenta || "con usuarios activos"}: corresponde SOPORTE, no calificación ni venta.`).catch(() => {})
+          continue
+        }
+      }
+    } catch { /* sin lectura de cuenta: sigue el flujo normal */ }
     if (await cerrado(fono)) {
       await setKvValue(`sdr_recon_deal_${d.id}`, "cerrado").catch(() => {})
       continue
