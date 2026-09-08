@@ -25,7 +25,8 @@ import { PERFIL_CO } from "./paises/co"
 import { ownerDeCotizacion } from "./zoho-quote-owner"
 import { obtenerLinkOnboarding } from "./tools/registrar-comprobante-transferencia"
 import { pagoCierraLoop } from "./loop-v2"
-import { claveFase, claveBorrador, claveQuoteOnboarding } from "./onboarding/fase"
+import { claveFase, claveBorrador, claveQuoteOnboarding, claveColaAltas } from "./onboarding/fase"
+import { avisarEquipoInterno } from "./alerta-interna"
 import { onboardingActivoPara } from "./onboarding-piloto"
 import { entregarKickoffOnboarding } from "./onboarding-envio"
 
@@ -374,6 +375,31 @@ export async function cerrarYTraspasarPostPago(
   // fase sin kickoff y, con el wizard ya frenado en el cotizador, sin nada.
   const canalEjecutivo = await esCanalEjecutivo(quoteId)
   if (esCL && !canalEjecutivo && (await onboardingActivoPara(contact))) {
+    // SEGUNDA EMPRESA POR EL MISMO NÚMERO (08-sep, caso Lorena: pagó dos
+    // cotizaciones, una por RUT, con minutos de diferencia). El estado del
+    // onboarding vive POR CONTACTO: si el ciclo ya está abierto con OTRA
+    // cotización, esta no lo pisa (el borrador, la NDV y la IMP seguirían
+    // siendo de la primera). Queda en cola con aviso interno; el alta de la
+    // segunda se arranca cuando la primera cierra (hoy: a mano, vic-onboarding-invocar).
+    const faseActual = (await getKvValue(claveFase(contact)).catch(() => null)) || ""
+    const quoteAbierta = (await getKvValue(claveQuoteOnboarding(contact)).catch(() => null)) || ""
+    if (faseActual === "onboarding" && quoteAbierta && quoteAbierta !== String(quoteId)) {
+      try {
+        const pointers = await getQuotePointers(contact)
+        const esta = pointers.find((p) => p.quoteId === quoteId)
+        const raw = await getKvValue(claveColaAltas(contact)).catch(() => null)
+        const cola = (raw ? (JSON.parse(raw) as Array<{ quoteId: string }>) : []).filter((c) => c.quoteId !== String(quoteId))
+        cola.push({ quoteId: String(quoteId), empresa: esta?.empresa || "", rut: esta?.rut || "", at: new Date().toISOString() } as { quoteId: string })
+        await setKvValue(claveColaAltas(contact), JSON.stringify(cola))
+        await avisarEquipoInterno(
+          `⏳ SEGUNDA EMPRESA PAGADA por +${contact}: cotización ${quoteId} (${esta?.empresa || "?"} · RUT ${esta?.rut || "?"}) quedó EN COLA — ` +
+            `el alta abierta es de la cotización ${quoteAbierta}. Cuando esa termine, arrancar la segunda con vic-onboarding-invocar (borrador limpio + onb_quote_ = ${quoteId}).`,
+        ).catch(() => {})
+      } catch (e) {
+        console.warn("[postpago] cola de altas:", e instanceof Error ? e.message : e)
+      }
+      return { contact, traspaso: "omitido" }
+    }
     await setKvValue(claveFase(contact), "onboarding").catch(() => {})
     // La cotización que abre el ciclo queda ANCLADA (08-sep): NDV, IMP e
     // insight la leen de aquí y no del puntero más reciente del contacto.

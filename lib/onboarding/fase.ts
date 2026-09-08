@@ -87,3 +87,5 @@ export const claveInsightSync = (contact: string) => `onb_insight_sync_${contact
 export const clavePlanillasImp = (contact: string) => `onb_planillas_imp_${contact}`
 /** Cotización PAGADA que abrió este ciclo de alta (08-sep, caso Lorena con DOS cotizaciones en el mismo número: sin esto el job NDV/IMP tomaba el puntero más reciente, que podía ser la OTRA). */
 export const claveQuoteOnboarding = (contact: string) => `onb_quote_${contact}`
+/** Cola de altas pendientes del mismo número (JSON [{quoteId, empresa, rut, at}]) — segunda cotización PAGADA mientras el alta de la primera sigue abierta (08-sep, caso Lorena). */
+export const claveColaAltas = (contact: string) => `onb_cola_${contact}`
