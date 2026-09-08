@@ -171,7 +171,7 @@ async function notaTraspasoConversacion(leadId: string, fono: string): Promise<v
 // jamás se completaba, y por eso Lalo seguía viendo "Prospecto WhatsApp" en
 // leads donde el cliente sí se había presentado.
 const RE_NOMBRE_PLACEHOLDER = /^(prospecto|whatsapp|prospecto whatsapp)$/i
-const RE_EMPRESA_PLACEHOLDER = /^(por identificar|prospecto whatsapp)/i
+const RE_EMPRESA_PLACEHOLDER = /^(por identificar|prospecto whatsapp|no declarado)|^[-–—\s]*$/i
 
 /** ¿El nombre del registro sigue siendo el placeholder? Se evalúa el nombre
  * COMPLETO, no una de sus mitades. */
@@ -803,10 +803,13 @@ async function enriquecerLeadsDeChat(): Promise<number> {
       // (recién extraído o ya renombrado antes) pero Empresa aún en
       // placeholder y sin razón social disponible → se deja "-" (el campo es
       // obligatorio en Leads, no acepta vacío). "Ximena Godoy / Prospecto
-      // WhatsApp" despistaba más que un guion.
+      // WhatsApp" despistaba más que un guion. Desde el 08-sep (Lalo) el
+      // texto es "No declarado" en vez de "-" — sigue siendo placeholder
+      // para todo lo demás (regex, conversión, cotizador).
       const nombreRealConocido = Boolean(nombreCliente) || !nombreEsPlaceholder(ld.First_Name, ld.Last_Name)
-      if (!campos.Company && nombreRealConocido && RE_EMPRESA_PLACEHOLDER.test(String(ld.Company || "").trim())) {
-        campos.Company = "-"
+      const companyActual = String(ld.Company || "").trim()
+      if (!campos.Company && nombreRealConocido && RE_EMPRESA_PLACEHOLDER.test(companyActual) && companyActual !== "No declarado") {
+        campos.Company = "No declarado"
       }
       if (ex?.email && !String(ld.Email || "").trim()) campos.Email = ex.email
       if (rutChat && !String(ld.RUT_Empresa || "").trim()) campos.RUT_Empresa = rutChat

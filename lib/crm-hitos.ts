@@ -806,7 +806,7 @@ async function convertirConDeal(
   // ptv-cron, para que la cuenta nazca propia y el cotizador la renombre
   // después. Best-effort: si el PUT falla, el convert sigue.
   const companyLead = String(lead.company || "").trim()
-  if (!companyLead || /^[-–—\s]*$/.test(companyLead) || /^prospecto whatsapp$/i.test(companyLead)) {
+  if (!companyLead || /^[-–—\s]*$/.test(companyLead) || /^prospecto whatsapp$/i.test(companyLead) || /^no declarado$/i.test(companyLead)) {
     let nombreCuenta = ""
     if (lead.rut) {
       try {
