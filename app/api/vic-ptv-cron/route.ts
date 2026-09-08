@@ -2658,6 +2658,9 @@ async function reconciliarSdrCalificados(ahora: Date): Promise<{ revisados: numb
     const fono = String(l.Phone || "").replace(/\D/g, "")
     if (!fono || !fono.startsWith("56") || isTestContact(fono, tests)) continue
     if (await getKvValue(`sdr_recon_${l.id}`).catch(() => null)) continue
+    // Con deal vivo del mismo fono (candado deal_fono_, caso Joyce: la formal
+    // creó el deal sin convertir el lead) manda el bloque de DEALS de abajo.
+    if (await getKvValue(`deal_fono_${fono}`).catch(() => null)) continue
     out.revisados++
     let empleados = Number(l.N_Empleados_que_marcan || 0) || 0
     let rut = String(l.RUT_Empresa || "").trim()
