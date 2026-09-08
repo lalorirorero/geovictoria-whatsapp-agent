@@ -8560,13 +8560,16 @@ export async function GET(req: Request): Promise<Response> {
         } catch { /* sin campañas, la clasificación queda como estaba */ }
         // Empresa por cotización para las viñetas del Grupo Foto (elementos
         // tel~quoteId): así el mismo fono con dos cotizaciones nombra ambas.
+        // Viñeta = razón social DE LA COTIZACIÓN + número (Lalo 08-sep, caso
+        // Lorena: dos empresas con la misma cuenta salían como dos RUT
+        // iguales; el nombre de la cuenta ya no manda).
         const nombresQuote = new Map<string, string>()
         for (const q of cierre?.todasList || []) {
           const qid = String(q.id || "")
-          const emp =
-            String(q["Cuenta_Asociada.Account_Name"] || "").trim() ||
-            String(q.Name || "").replace(/^Cotización\s+/i, "").replace(/\s+-\s+\d{4}-\d{2}-\d{2}$/, "").trim()
-          if (qid && emp) nombresQuote.set(qid, emp)
+          const deNombre = String(q.Name || "").replace(/^Cotización\s+/i, "").replace(/\s+-\s+\d{4}-\d{2}-\d{2}$/, "").trim()
+          const emp = deNombre || String(q["Cuenta_Asociada.Account_Name"] || "").trim()
+          const num = String(q.Numero_Cotizacion || "").trim()
+          if (qid && (emp || num)) nombresQuote.set(qid, [emp, num].filter(Boolean).join(" · "))
         }
         inboundHtml = renderInboundDiario(cohortes, { rango, qs: filtrosQS().toString(), caja, nombres: nombresPorTel, nombresQuote, detalles: detallesPorTel, trans: transPorTel, formVicky: inbdet ? undefined : formPorDia, formConv: inbdet ? undefined : formConvPorDia, formConvTels: inbdet ? undefined : formConvTels, formTels: inbdet ? undefined : formTels, origenes: inbdet ? undefined : origenPorTel, campanas: inbdet ? undefined : campanaPorTel, outbound: inbdet ? undefined : outbPorDia, outboundToc: inbdet ? undefined : outbTocPorDia, outboundReg: inbdet ? undefined : outbRegPorDia, outboundTels: inbdet ? undefined : outbTels })
         // Tabla detalle del form — solo en la vista completa, no en los
