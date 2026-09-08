@@ -37,6 +37,7 @@ import {
   claveFase,
   claveBorrador,
   claveAltaSolicitada,
+  claveQuoteOnboarding,
   claveCapacitacion,
   claveConfiguracion,
   claveEsquema,
@@ -756,9 +757,11 @@ export async function armarOnboarding(contact: string): Promise<{
             // aviso: el cliente ya pagó y ya tiene su cuenta.
             void import("./ndv-alta")
               .then(async (m) => {
+                const quoteAnclada = (await getKvValue(claveQuoteOnboarding(contact)).catch(() => null)) || ""
                 await m.encolarNdvImp(contact, {
                   companyId: String(alta.companyId || ""),
                   empresa: b.empresa.nombre || "",
+                  ...(quoteAnclada ? { quoteId: quoteAnclada } : {}),
                   // El identificador del borrador ES el RUT (así lo pide la
                   // API de alta: sin puntos ni guión).
                   rut: b.empresa.identificador || undefined,

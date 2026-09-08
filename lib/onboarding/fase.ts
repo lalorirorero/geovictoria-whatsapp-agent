@@ -85,3 +85,5 @@ export const claveInsightNota = (contact: string) => `onb_insight_nota_${contact
 export const claveInsightSync = (contact: string) => `onb_insight_sync_${contact}`
 /** Planillas Excel del wizard ya adjuntas a la Implementación (JSON {impId, notaId, archivos}) — para no re-adjuntar. */
 export const clavePlanillasImp = (contact: string) => `onb_planillas_imp_${contact}`
+/** Cotización PAGADA que abrió este ciclo de alta (08-sep, caso Lorena con DOS cotizaciones en el mismo número: sin esto el job NDV/IMP tomaba el puntero más reciente, que podía ser la OTRA). */
+export const claveQuoteOnboarding = (contact: string) => `onb_quote_${contact}`

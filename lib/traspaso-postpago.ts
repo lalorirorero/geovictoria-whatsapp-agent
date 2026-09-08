@@ -25,7 +25,7 @@ import { PERFIL_CO } from "./paises/co"
 import { ownerDeCotizacion } from "./zoho-quote-owner"
 import { obtenerLinkOnboarding } from "./tools/registrar-comprobante-transferencia"
 import { pagoCierraLoop } from "./loop-v2"
-import { claveFase, claveBorrador } from "./onboarding/fase"
+import { claveFase, claveBorrador, claveQuoteOnboarding } from "./onboarding/fase"
 import { onboardingActivoPara } from "./onboarding-piloto"
 import { entregarKickoffOnboarding } from "./onboarding-envio"
 
@@ -375,6 +375,9 @@ export async function cerrarYTraspasarPostPago(
   const canalEjecutivo = await esCanalEjecutivo(quoteId)
   if (esCL && !canalEjecutivo && (await onboardingActivoPara(contact))) {
     await setKvValue(claveFase(contact), "onboarding").catch(() => {})
+    // La cotización que abre el ciclo queda ANCLADA (08-sep): NDV, IMP e
+    // insight la leen de aquí y no del puntero más reciente del contacto.
+    await setKvValue(claveQuoteOnboarding(contact), String(quoteId)).catch(() => {})
     // Sembrar el borrador con lo que la VENTA ya sabe (regla de Eduardo,
     // 26-jul: no volver a preguntar lo que el cliente ya dio — confirmarlo o
     // actualizarlo). La cotización PAGADA trae razón social y RUT; si el

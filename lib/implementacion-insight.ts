@@ -34,6 +34,7 @@ import {
   claveEsquema,
   claveInsightNota,
   claveInsightSync,
+  claveQuoteOnboarding,
 } from "./onboarding/fase"
 import { configuracionVacia, type Configuracion } from "./onboarding/configuracion"
 import { parsearBorrador, type Borrador } from "./onboarding/borrador"
@@ -91,7 +92,8 @@ async function itemsDeLaVenta(contact: string): Promise<{ items: ItemCot[]; nume
   try {
     const { getQuotePointers } = await import("./supabase-persistence-v3")
     const punteros = await getQuotePointers(contact).catch(() => [])
-    const p = punteros.find((x) => (x.quoteId || "").trim())
+    const anclada = (await getKvValue(claveQuoteOnboarding(contact)).catch(() => null)) || ""
+    const p = (anclada ? punteros.find((x) => x.quoteId === anclada) : undefined) || punteros.find((x) => (x.quoteId || "").trim())
     if (!p) return { items: [], numero: "" }
     const token = await getZohoAccessToken()
     const modulo = (process.env.ZOHO_QUOTE_MODULE || "Cotizaciones_GeoVictoria").trim()
