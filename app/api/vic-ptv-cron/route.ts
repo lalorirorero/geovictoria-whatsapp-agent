@@ -2229,6 +2229,17 @@ export async function GET(req: Request) {
     return { reabiertos: 0, recerrados: 0 }
   })
 
+  // 4b. PRESENTACIONES PENDIENTES (Lalo 08-sep): los traspasos que quedaron
+  // mudos con el cliente (reloj vencido antes de las 9, ventana cerrada) se
+  // presentan apenas hay ventana.
+  const presentacionesPend = await reintentarPresentacionesPendientes(ahora).catch((e) => {
+    console.warn("[ptv-cron] reintento de presentaciones falló:", e instanceof Error ? e.message : e)
+    return { presentados: 0, pendientes: 0 }
+  })
+  if (presentacionesPend.presentados > 0 || presentacionesPend.pendientes > 0) {
+    console.log(`[ptv-cron] presentaciones pendientes: ${JSON.stringify(presentacionesPend)}`)
+  }
+
   // 5. ESCALADA SLA 60' (punto 1, Lalo 08-ago): traspaso activo sin contacto
   // real del vendedor a los 60 min hábiles → alerta interna, una sola vez.
   const slaAlertas = await escaladaSla(ahora).catch((e) => {
@@ -2404,6 +2415,99 @@ function enVentanaProactiva(fono: string, ahora: Date): boolean {
   const hora =
     Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: false }).format(ahora)) % 24
   return hora >= 9 && hora < 21
+}
+
+/**
+ * PRESENTACIÓN PENDIENTE (Lalo 08-sep, "confirmo"): 19 de los 21 traspasos
+ * sin presentar de la semana fueron los relojes que vencen a las 08:00-08:41
+ * — el mensaje al cliente salía fuera de la ventana 9-21 (o con la ventana de
+ * Meta cerrada tras el fin de semana) y nadie lo reintentaba: el ejecutivo
+ * recibía el lead y el cliente jamás sabía quién lo atendía. Ahora cada tick
+ * en ventana reintenta las presentaciones pendientes de traspasos ACTIVOS de
+ * menos de 48 h: mensaje si la ventana de Meta está abierta, plantilla
+ * `vicky_traspaso_ejecutivo` si no (CL/PE; sin teléfono del vendedor no se
+ * presenta a medias). Máximo 10 por tick para no hacer ráfaga.
+ */
+async function reintentarPresentacionesPendientes(ahora: Date): Promise<{ presentados: number; pendientes: number }> {
+  const desde = new Date(ahora.getTime() - 48 * 3600_000).toISOString()
+  const filas = await supa<{
+    id: string
+    contact: string
+    vendedor_email: string | null
+    vendedor_nombre: string | null
+    vendedor_zoho_id: string | null
+    traspasado_at: string
+  }>(
+    `vic_ptv?estado=eq.activo&presentado_al_prospecto=eq.false&traspasado_at=gte.${encodeURIComponent(desde)}` +
+      `&select=id,contact,vendedor_email,vendedor_nombre,vendedor_zoho_id,traspasado_at&order=traspasado_at.asc&limit=60`,
+  ).catch(() => [])
+  let presentados = 0
+  let pendientes = 0
+  const tests = testContactSet()
+  let H: Record<string, string> | null = null
+  let api = ""
+  for (const f of filas) {
+    const clean = String(f.contact || "").replace(/\D/g, "")
+    const email = (f.vendedor_email || "").trim()
+    if (!clean || !email || isTestContact(clean, tests)) continue
+    if (!enVentanaProactiva(clean, ahora)) {
+      pendientes++
+      continue
+    }
+    if (presentados >= 10) {
+      pendientes++
+      continue
+    }
+    // Un traspaso de hace menos de 5 min lo presenta su propio camino; acá
+    // solo entran los que quedaron mudos.
+    if (ahora.getTime() - new Date(f.traspasado_at).getTime() < 5 * 60_000) continue
+    const pais = (paisDeContacto(clean) || "cl") as "cl" | "co" | "mx" | "pe"
+    const nombre = (f.vendedor_nombre || "").trim() || NOMBRE_VENDEDOR[email] || email.split("@")[0]
+    let telefono = WHATSAPP_VENDEDOR[email] || telefonoTmPorEmail(email)
+    if (!telefono && f.vendedor_zoho_id) {
+      try {
+        if (!H) {
+          const { getZohoAccessToken } = await import("@/lib/zoho-token")
+          const token = await getZohoAccessToken()
+          api = (process.env.ZOHO_API_DOMAIN || "https://www.zohoapis.com").trim()
+          H = { Authorization: `Zoho-oauthtoken ${token}`, "Content-Type": "application/json" }
+        }
+        telefono = await telefonoDeUsuario(String(f.vendedor_zoho_id), H, api)
+      } catch { /* sin teléfono: se decide abajo */ }
+    }
+    const conv = await supa<{ last_user_at: string | null }>(
+      `vic_v3_conversations?contact=eq.${encodeURIComponent(clean)}&select=last_user_at&limit=1`,
+    ).catch(() => [])
+    const lastUser = conv[0]?.last_user_at ? new Date(conv[0].last_user_at).getTime() : 0
+    const ventanaAbierta = lastUser > 0 && ahora.getTime() - lastUser < VENTANA_META_MS
+    let enviado = false
+    let registro = ""
+    if (ventanaAbierta) {
+      const texto = mensajePresentacion(pais, nombre, { email, whatsapp: telefono || undefined })
+      enviado = await sendBotmakerMessage(clean, texto).catch(() => false)
+      registro = texto
+    } else if ((pais === "cl" || pais === "pe") && telefono) {
+      enviado = await sendBotmakerTemplate(clean, TM_TEMPLATE, {
+        nombre: "👋",
+        ejecutivo_smb: nombre,
+        telefono_ejecutivo: telefono,
+        correoElectronico: email,
+      }).catch(() => false)
+      registro = `[Plantilla ${TM_TEMPLATE}]: presenté a ${nombre} (${telefono} · ${email}) como tu ejecutivo de acompañamiento.`
+    } else {
+      pendientes++
+      continue
+    }
+    if (enviado) {
+      await supa(`vic_ptv?id=eq.${f.id}`, { method: "PATCH", body: JSON.stringify({ presentado_al_prospecto: true }) }).catch(() => {})
+      await appendAssistantV3(clean, registro).catch(() => {})
+      presentados++
+      console.log(`[ptv-cron] presentación reintentada +${clean} → ${email} (${ventanaAbierta ? "texto" : "plantilla"})`)
+    } else {
+      pendientes++
+    }
+  }
+  return { presentados, pendientes }
 }
 
 /**
