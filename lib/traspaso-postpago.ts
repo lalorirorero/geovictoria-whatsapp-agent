@@ -384,6 +384,9 @@ export async function cerrarYTraspasarPostPago(
     const faseActual = (await getKvValue(claveFase(contact)).catch(() => null)) || ""
     const quoteAbierta = (await getKvValue(claveQuoteOnboarding(contact)).catch(() => null)) || ""
     if (faseActual === "onboarding" && quoteAbierta && quoteAbierta !== String(quoteId)) {
+      // Ya resuelto a mano/antes (marca traspaso_postpago_<quote>): el barrido
+      // de Pagadas del cotizador re-dispara este post-pago y volvía a encolar.
+      if (await getKvValue(`traspaso_postpago_${quoteId}`).catch(() => null)) return { contact, traspaso: "ya_enviado" }
       try {
         const pointers = await getQuotePointers(contact)
         const esta = pointers.find((p) => p.quoteId === quoteId)
