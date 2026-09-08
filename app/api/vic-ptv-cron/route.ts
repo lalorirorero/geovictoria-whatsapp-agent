@@ -2246,10 +2246,15 @@ export async function GET(req: Request) {
   // 4b. PRESENTACIONES PENDIENTES (Lalo 08-sep): los traspasos que quedaron
   // mudos con el cliente (reloj vencido antes de las 9, ventana cerrada) se
   // presentan apenas hay ventana.
-  const presentacionesPend = await reintentarPresentacionesPendientes(ahora).catch((e) => {
-    console.warn("[ptv-cron] reintento de presentaciones falló:", e instanceof Error ? e.message : e)
-    return { presentados: 0, pendientes: 0 }
-  })
+  // INTERRUPTOR (Lalo 08-sep, "antes de presentar a cualquiera confírmame"):
+  // el reintento del tick corre solo con vic_kv `ptv_reintento_presentacion`="on".
+  const reintentoOn = ((await getKvValue("ptv_reintento_presentacion").catch(() => null)) || "").trim() === "on"
+  const presentacionesPend = reintentoOn
+    ? await reintentarPresentacionesPendientes(ahora).catch((e) => {
+        console.warn("[ptv-cron] reintento de presentaciones falló:", e instanceof Error ? e.message : e)
+        return { presentados: 0, pendientes: 0, detalle: [] as string[] }
+      })
+    : { presentados: 0, pendientes: 0, detalle: [] as string[] }
   if (presentacionesPend.presentados > 0 || presentacionesPend.pendientes > 0) {
     console.log(`[ptv-cron] presentaciones pendientes: ${JSON.stringify(presentacionesPend)}`)
   }
