@@ -1232,12 +1232,17 @@ async function fetchConvsListado(): Promise<ConvListado[]> {
  * real desde vic_v3_messages — misma señal que usa el conteo de preforms.
  * Además parsea la DOTACIÓN cotizada del texto («Asistencia: 40 × 0,055 UF»;
  * plan de tarifa fija sin multiplicador = tramo 1-10). */
+// "Precio mostrado" = mensaje de Vicky con el bloque de precio. Dos formas
+// vivas (08-sep, caso Luis/Negrete): el preform clásico ("Resumen mensual
+// recurrente… Total mensual con IVA") y el de reloj + app ("💰 1,23 UF + IVA
+// al mes (aprox. $59.599)") — sin la segunda, un chat que vio precio con
+// reloj solo contaba si llegaba a la formal.
 async function fetchPreformAts(convs: ConvListado[]): Promise<{ at: Map<string, string>; usuarios: Map<string, number> }> {
   const at = new Map<string, string>()
   const usuarios = new Map<string, number>()
   const porConvId = new Map(convs.map((c) => [c.id, c.contact]))
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/vic_v3_messages?role=eq.assistant&or=(content.ilike.*Resumen%20mensual*,content.ilike.*Total%20mensual%20con%20IVA*)&select=conversation_id,at,content&order=at.desc&limit=1000`,
+    `${SUPABASE_URL}/rest/v1/vic_v3_messages?role=eq.assistant&or=(content.ilike.*Resumen%20mensual*,content.ilike.*Total%20mensual%20con%20IVA*,content.ilike.*UF%20%2B%20IVA%20al%20mes*)&select=conversation_id,at,content&order=at.desc&limit=1500`,
     { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }, cache: "no-store" },
   )
   if (!res.ok) return { at, usuarios }
