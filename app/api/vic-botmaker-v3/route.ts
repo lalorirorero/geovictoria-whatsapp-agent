@@ -509,6 +509,13 @@ async function processOneTurn(
     // para OTRA empresa. (La marca la deja registrar_comprobante_transferencia
     // junto con cerrar el loop del remitente.)
     let directivaPostPago = ""
+    // CLIENTE EXISTENTE (Lalo 08-sep): número de una cuenta que ya es cliente
+    // → soporte/postventa, jamás prospecto (lib/cliente-existente, cache 24 h).
+    try {
+      const { detectarClienteExistente, directivaClienteExistente } = await import("@/lib/cliente-existente")
+      const ce = await detectarClienteExistente(contact)
+      if (ce) directivaPostPago += directivaClienteExistente(ce)
+    } catch { /* sin señal: prospecto */ }
     try {
       const marcaComprobante = await getKvValue(`comprobante_ok_${contact}`)
       if (marcaComprobante) {

@@ -1809,6 +1809,22 @@ export async function traspasarAhora(
   if (!clean) return { ok: false, motivo: "sin contacto" }
   const pais = (paisDeContacto(clean) || "cl") as "cl" | "co" | "mx" | "pe"
 
+  // CLIENTE EXISTENTE (Lalo 08-sep, caso Samuel/Onecup): un cliente actual
+  // que pide "un agente" es SOPORTE — no se traspasa a calificación ni a
+  // telemarketing. Aviso interno y el turno de Vicky lo resuelve con la
+  // directiva de cliente existente (canales de soporte).
+  try {
+    const { detectarClienteExistente } = await import("@/lib/cliente-existente")
+    const ce = await detectarClienteExistente(clean)
+    if (ce) {
+      await avisarEquipoInterno(
+        `🛠️ CLIENTE EXISTENTE pide atención: +${clean} pertenece a la cuenta "${ce.cuentaNombre}" (${ce.estado || "usuarios activos"}). ` +
+          `NO se traspasó a ventas (motivo ${opts.motivo}): corresponde SOPORTE — revisar el chat y atender por soporte@ / 600 914 3819.`,
+      ).catch(() => {})
+      return { ok: false, motivo: "cliente_existente" }
+    }
+  } catch { /* sin señal: sigue el traspaso normal */ }
+
   // 0. CANDADO: si ya hay traspaso activo, NO se re-sortea. Se devuelve el
   //    vendedor que ya lo atiende para que Vicky lo repita, en vez de mover al
   //    cliente de manos por segunda vez.
@@ -2112,6 +2128,20 @@ export async function GET(req: Request) {
     // un motivo sin vuelta ("Es un usuario", spam, pruebas…) — no se traspasa
     // ni se le vuelve a entregar el lead a nadie. El loop cierra con motivo
     // propio (queda fuera de relojes y toques); Vicky sigue solo reactiva.
+    // CLIENTE EXISTENTE (Lalo 08-sep): el reloj tampoco lo traspasa — loop
+    // cerrado con motivo propio, Vicky sigue reactiva con la directiva de soporte.
+    try {
+      const { detectarClienteExistente } = await import("@/lib/cliente-existente")
+      const ce = await detectarClienteExistente(c.contact)
+      if (ce) {
+        await supa(`vic_loop?contact=eq.${encodeURIComponent(c.contact)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ estado: "cerrado", motivo_cierre: "cliente_existente" }),
+        })
+        console.log(`[ptv] ${c.contact}: cliente existente (${ce.cuentaNombre}) — traspaso omitido, loop cerrado (cliente_existente)`)
+        continue
+      }
+    } catch { /* sin señal: sigue */ }
     const motivoTerminal = await leadTerminalNoProspecto(c.contact)
     if (motivoTerminal) {
       await supa(`vic_loop?contact=eq.${encodeURIComponent(c.contact)}`, {

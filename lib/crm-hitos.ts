@@ -1521,6 +1521,20 @@ export async function sincronizarHitoCrm(
     // Solo PRE-entrega: el RUT que aparece DESPUÉS de entregado jamás
     // convierte ni re-sortea (decisión Lalo 01-sep — eso es del ejecutivo).
     if (!datos.rut && clean.startsWith("56")) {
+  // CLIENTE EXISTENTE (Lalo 08-sep): un número de una cuenta que ya es
+  // cliente NO genera lead ni deal desde Vicky (era la fuente de leads "que
+  // son usuarios"). Las ampliaciones las gestiona el humano en la cuenta.
+  try {
+    const clean0 = (contact || "").replace(/\D/g, "")
+    if (clean0.startsWith("56")) {
+      const { detectarClienteExistente } = await import("./cliente-existente")
+      const ce = await detectarClienteExistente(clean0)
+      if (ce) {
+        console.log(`[crm-hitos] ${clean0}: cliente existente (${ce.cuentaNombre}) — hito "${hito}" no crea lead ni deal`)
+        return
+      }
+    }
+  } catch { /* sin señal: sigue */ }
       try {
         const { fetchHistoryV3 } = await import("./supabase-persistence-v3")
         const { rutEnTexto } = await import("./empresas-sii")

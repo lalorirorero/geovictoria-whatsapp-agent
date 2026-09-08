@@ -997,6 +997,19 @@ const VICKY_OWNER_ID = "3525045000484500876"
 
 export async function createZohoLead(input: CreateZohoLeadInput): Promise<CreateZohoLeadResult> {
   try {
+    // CLIENTE EXISTENTE (Lalo 08-sep): jamás un lead para un número que ya es
+    // cliente (cuenta 3. Cliente/Facturando o con usuarios activos).
+    try {
+      const fonoCE = ((input.telefono || "").trim() || (input.contactoWA || "").trim()).replace(/\D/g, "")
+      if (fonoCE.startsWith("56")) {
+        const { detectarClienteExistente } = await import("./cliente-existente")
+        const ce = await detectarClienteExistente(fonoCE)
+        if (ce) {
+          console.log(`[zoho-leads] ${fonoCE}: cliente existente (${ce.cuentaNombre}) — no se crea lead`)
+          return { success: false, error: `cliente_existente:${ce.cuentaNombre}` }
+        }
+      }
+    } catch { /* sin señal: sigue */ }
     // CANDADO ANTI-DUPLICADOS (casos SYDA/Vélez/Catalina/Mayra, 28-30 jul):
     // el search de Zoho tarda ~2 min en indexar un lead nuevo, así que un
     // reintento o un segundo flujo dentro de esa ventana creaba otro lead
