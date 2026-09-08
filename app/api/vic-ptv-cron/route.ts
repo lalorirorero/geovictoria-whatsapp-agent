@@ -1906,7 +1906,7 @@ export async function GET(req: Request) {
   {
     const sp = new URL(req.url).searchParams
     if (sp.get("soloConciliacionSdr") === "1") {
-      const r = await reconciliarSdrCalificados(new Date())
+      const r = await reconciliarSdrCalificados(new Date(), { dias: Number(sp.get("dias")) || 7, max: Number(sp.get("max")) || 4 })
       return NextResponse.json({ ok: true, modo: "soloConciliacionSdr", ...r })
     }
     if (sp.get("soloPresentaciones") === "1") {
@@ -1915,6 +1915,7 @@ export async function GET(req: Request) {
         horas: Number(sp.get("horas")) || 48,
         orden: sp.get("orden") === "asc" ? "asc" : "desc",
         contactos: (sp.get("contactos") || "").split(",").map((x) => x.trim()).filter(Boolean),
+        revisarDestino: sp.get("revisar") === "1",
       })
       return NextResponse.json({ ok: true, modo: "soloPresentaciones", ...r })
     }
@@ -2506,9 +2507,64 @@ function enVentanaProactiva(fono: string, ahora: Date): boolean {
  */
 async function reintentarPresentacionesPendientes(
   ahora: Date,
-  opts: { max?: number; horas?: number; orden?: "asc" | "desc"; contactos?: string[] } = {},
+  opts: { max?: number; horas?: number; orden?: "asc" | "desc"; contactos?: string[]; revisarDestino?: boolean } = {},
 ): Promise<{ presentados: number; pendientes: number; detalle: string[] }> {
   const soloContactos = new Set((opts.contactos || []).map((c) => c.replace(/\D/g, "")).filter(Boolean))
+  // REVISAR DESTINO ANTES DE PRESENTAR (Lalo 08-sep, tandas de los antiguos):
+  // el responsable es el DUEÑO del trato en Zoho, no la bitácora vic_ptv; y
+  // un caso cerrado (pagado, perdido, lead terminal) no se presenta.
+  let Hz: Record<string, string> | null = null
+  let apiZ = ""
+  const destinoVigente = async (
+    fono: string,
+  ): Promise<{ cerrado?: string; email?: string; zohoId?: string; nombre?: string }> => {
+    try {
+      if (!Hz) {
+        const { getZohoAccessToken } = await import("@/lib/zoho-token")
+        const token = await getZohoAccessToken()
+        apiZ = (process.env.ZOHO_API_DOMAIN || "https://www.zohoapis.com").trim()
+        Hz = { Authorization: `Zoho-oauthtoken ${token}`, "Content-Type": "application/json" }
+      }
+      const punteros = await getQuotePointers(fono).catch(() => [])
+      for (const p of punteros) {
+        if (p.quoteId && (await getKvValue(`venta_dash_v3_${p.quoteId}`).catch(() => null))) return { cerrado: "pagado" }
+      }
+      if (await getKvValue(`comprobante_ok_${fono}`).catch(() => null)) return { cerrado: "comprobante" }
+      if (await getKvValue(`pago_online_${fono}`).catch(() => null)) return { cerrado: "pago_online" }
+      const leerDeal = async (dealId: string) => {
+        const g = await fetch(`${apiZ}/crm/v3/Deals/${dealId}?fields=Owner,Stage`, { headers: Hz!, cache: "no-store" })
+        if (g.status !== 200) return null
+        return ((await g.json().catch(() => ({}))) as { data?: Array<{ Owner?: { id?: string; name?: string; email?: string }; Stage?: string }> }).data?.[0] || null
+      }
+      const dealIdPtr = String(punteros.find((p) => p.dealId)?.dealId || "").replace(/\D/g, "")
+      let deal = dealIdPtr ? await leerDeal(dealIdPtr) : null
+      if (!deal) {
+        const rs = await fetch(`${apiZ}/crm/v3/Leads/search?phone=${fono}&converted=both&per_page=3`, { headers: Hz!, cache: "no-store" })
+        const filas = rs.ok && rs.status !== 204
+          ? (((await rs.json().catch(() => ({}))) as { data?: Array<{ id?: string; Converted_Deal?: { id?: string } | null; Owner?: { id?: string; name?: string; email?: string }; Lead_Status?: string; Motivo_No_calificado?: string }> }).data || [])
+          : []
+        const conv = filas.find((l) => l.Converted_Deal?.id)
+        if (conv?.Converted_Deal?.id) deal = await leerDeal(conv.Converted_Deal.id)
+        else if (filas[0]) {
+          const l = filas[0]
+          const st = String(l.Lead_Status || "")
+          if (/no calificado/i.test(st)) return { cerrado: `lead ${st}${l.Motivo_No_calificado ? ` (${l.Motivo_No_calificado})` : ""}` }
+          const em = (l.Owner?.email || "").toLowerCase()
+          if (em && !/vicky@|info@geovictoria/.test(em)) return { email: em, zohoId: l.Owner?.id, nombre: l.Owner?.name }
+          return {}
+        }
+      }
+      if (deal) {
+        const st = String(deal.Stage || "")
+        if (/perdido|implementando|facturando/i.test(st)) return { cerrado: `deal ${st}` }
+        const em = (deal.Owner?.email || "").toLowerCase()
+        if (em && !/vicky@|info@geovictoria/.test(em)) return { email: em, zohoId: deal.Owner?.id, nombre: deal.Owner?.name }
+      }
+      return {}
+    } catch {
+      return {}
+    }
+  }
   const maxPorPasada = Math.max(1, Math.min(60, Number(opts.max) || 10))
   const horas = Math.max(1, Math.min(24 * 90, Number(opts.horas) || 48))
   const orden = opts.orden === "desc" ? "desc" : "asc"
@@ -2543,13 +2599,35 @@ async function reintentarPresentacionesPendientes(
       pendientes++
       continue
     }
+    let emailVig = email
+    let nombreVig = ""
+    let zohoIdVig = String(f.vendedor_zoho_id || "")
+    if (opts.revisarDestino) {
+      const d = await destinoVigente(clean)
+      if (d.cerrado) {
+        await supa(`vic_ptv?id=eq.${f.id}`, { method: "PATCH", body: JSON.stringify({ estado: "cerrado" }) }).catch(() => {})
+        detalle.push(`+${clean}: CERRADO (${d.cerrado}) — no se presenta`)
+        continue
+      }
+      if (d.email && d.email !== email.toLowerCase()) {
+        emailVig = d.email
+        nombreVig = d.nombre || ""
+        zohoIdVig = d.zohoId || ""
+        await supa(`vic_ptv?id=eq.${f.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ vendedor_email: emailVig, vendedor_zoho_id: zohoIdVig, vendedor_nombre: nombreVig || NOMBRE_VENDEDOR[emailVig] || emailVig.split("@")[0] }),
+        }).catch(() => {})
+        await asignarConversacionEnBotmaker(clean, emailVig).catch(() => {})
+        detalle.push(`+${clean}: dueño en Zoho es ${emailVig} (bitácora decía ${email}) — se presenta al de Zoho`)
+      }
+    }
     // Un traspaso de hace menos de 5 min lo presenta su propio camino; acá
     // solo entran los que quedaron mudos.
     if (ahora.getTime() - new Date(f.traspasado_at).getTime() < 5 * 60_000) continue
     const pais = (paisDeContacto(clean) || "cl") as "cl" | "co" | "mx" | "pe"
-    const nombre = (f.vendedor_nombre || "").trim() || NOMBRE_VENDEDOR[email] || email.split("@")[0]
-    let telefono = WHATSAPP_VENDEDOR[email] || telefonoTmPorEmail(email)
-    if (!telefono && f.vendedor_zoho_id) {
+    const nombre = nombreVig || (emailVig === email ? (f.vendedor_nombre || "").trim() : "") || NOMBRE_VENDEDOR[emailVig] || emailVig.split("@")[0]
+    let telefono = WHATSAPP_VENDEDOR[emailVig] || telefonoTmPorEmail(emailVig)
+    if (!telefono && zohoIdVig) {
       try {
         if (!H) {
           const { getZohoAccessToken } = await import("@/lib/zoho-token")
@@ -2557,7 +2635,7 @@ async function reintentarPresentacionesPendientes(
           api = (process.env.ZOHO_API_DOMAIN || "https://www.zohoapis.com").trim()
           H = { Authorization: `Zoho-oauthtoken ${token}`, "Content-Type": "application/json" }
         }
-        telefono = await telefonoDeUsuario(String(f.vendedor_zoho_id), H, api)
+        telefono = await telefonoDeUsuario(zohoIdVig, H, api)
       } catch { /* sin teléfono: se decide abajo */ }
     }
     const conv = await supa<{ last_user_at: string | null }>(
@@ -2568,7 +2646,7 @@ async function reintentarPresentacionesPendientes(
     let enviado = false
     let registro = ""
     if (ventanaAbierta) {
-      const texto = mensajePresentacion(pais, nombre, { email, whatsapp: telefono || undefined })
+      const texto = mensajePresentacion(pais, nombre, { email: emailVig, whatsapp: telefono || undefined })
       enviado = await sendBotmakerMessage(clean, texto).catch(() => false)
       registro = texto
     } else if ((pais === "cl" || pais === "pe") && telefono) {
@@ -2576,9 +2654,9 @@ async function reintentarPresentacionesPendientes(
         nombre: "👋",
         ejecutivo_smb: nombre,
         telefono_ejecutivo: telefono,
-        correoElectronico: email,
+        correoElectronico: emailVig,
       }).catch(() => false)
-      registro = `[Plantilla ${TM_TEMPLATE}]: presenté a ${nombre} (${telefono} · ${email}) como tu ejecutivo de acompañamiento.`
+      registro = `[Plantilla ${TM_TEMPLATE}]: presenté a ${nombre} (${telefono} · ${emailVig}) como tu ejecutivo de acompañamiento.`
     } else {
       pendientes++
       continue
@@ -2588,7 +2666,7 @@ async function reintentarPresentacionesPendientes(
       await appendAssistantV3(clean, registro).catch(() => {})
       presentados++
       detalle.push(`+${clean} → ${nombre} (${ventanaAbierta ? "texto" : "plantilla"})`)
-      console.log(`[ptv-cron] presentación reintentada +${clean} → ${email} (${ventanaAbierta ? "texto" : "plantilla"})`)
+      console.log(`[ptv-cron] presentación reintentada +${clean} → ${emailVig} (${ventanaAbierta ? "texto" : "plantilla"})`)
     } else {
       pendientes++
       detalle.push(`+${clean} → ${nombre}: NO salió (${ventanaAbierta ? "texto" : "plantilla"})`)
@@ -2607,12 +2685,14 @@ async function reintentarPresentacionesPendientes(
  * se presenta al cliente. Solo abiertos: pagados y perdidos no se tocan.
  * Candado kv `sdr_recon_<id>` (7 d). Máximo 4 por tick.
  */
-async function reconciliarSdrCalificados(ahora: Date): Promise<{ revisados: number; reenviados: number; detalle: string[] }> {
+async function reconciliarSdrCalificados(ahora: Date, opts: { dias?: number; max?: number } = {}): Promise<{ revisados: number; reenviados: number; detalle: string[] }> {
+  const diasLeads = Math.max(1, Math.min(60, Number(opts.dias) || 7))
+  const maxReenvios = Math.max(1, Math.min(20, Number(opts.max) || 4))
   const roster = (process.env.VICKY_TM_ROSTER_CALIFICACION_EMAILS || "aaraque@geovictoria.com,asepulveda@geovictoria.com")
     .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
   const out = { revisados: 0, reenviados: 0, detalle: [] as string[] }
   if (!roster.length) return out
-  const desde = new Date(ahora.getTime() - 7 * 24 * 3600_000).toISOString().replace(/\.\d{3}Z$/, "+00:00")
+  const desde = new Date(ahora.getTime() - diasLeads * 24 * 3600_000).toISOString().replace(/\.\d{3}Z$/, "+00:00")
   const { getZohoAccessToken } = await import("@/lib/zoho-token")
   const token = await getZohoAccessToken()
   const api = (process.env.ZOHO_API_DOMAIN || "https://www.zohoapis.com").trim()
@@ -2661,7 +2741,7 @@ async function reconciliarSdrCalificados(ahora: Date): Promise<{ revisados: numb
       `where ((Owner.email in (${lista}) and Converted__s = false) and Created_Time >= '${desde}') limit 60`,
   )
   for (const l of leads) {
-    if (out.reenviados >= 4) break
+    if (out.reenviados >= maxReenvios) break
     if (String(l.Created_By?.id || "") !== VICKY_ID) continue
     const status = String(l.Lead_Status || "")
     if (/no calificado/i.test(status)) continue
@@ -2745,7 +2825,7 @@ async function reconciliarSdrCalificados(ahora: Date): Promise<{ revisados: numb
       `where ((Owner.email in (${lista}) and Created_Time >= '${desde48}') and Stage in ('1. Trato Creado','2. Primera Reunion Realizada','3. En Levantamiento','4. Propuesta Enviada / En Negociación')) limit 40`,
   )
   for (const d of deals) {
-    if (out.reenviados >= 4) break
+    if (out.reenviados >= maxReenvios) break
     if (String(d.Created_By?.id || "") !== VICKY_ID) continue
     if (await getKvValue(`sdr_recon_deal_${d.id}`).catch(() => null)) continue
     const fono = String(d["Contact_Name.Phone"] || "").replace(/\D/g, "")
