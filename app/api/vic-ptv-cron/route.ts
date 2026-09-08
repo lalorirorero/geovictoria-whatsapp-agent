@@ -1911,6 +1911,7 @@ export async function GET(req: Request) {
         max: Number(sp.get("max")) || 20,
         horas: Number(sp.get("horas")) || 48,
         orden: sp.get("orden") === "asc" ? "asc" : "desc",
+        contactos: (sp.get("contactos") || "").split(",").map((x) => x.trim()).filter(Boolean),
       })
       return NextResponse.json({ ok: true, modo: "soloPresentaciones", ...r })
     }
@@ -2502,8 +2503,9 @@ function enVentanaProactiva(fono: string, ahora: Date): boolean {
  */
 async function reintentarPresentacionesPendientes(
   ahora: Date,
-  opts: { max?: number; horas?: number; orden?: "asc" | "desc" } = {},
+  opts: { max?: number; horas?: number; orden?: "asc" | "desc"; contactos?: string[] } = {},
 ): Promise<{ presentados: number; pendientes: number; detalle: string[] }> {
+  const soloContactos = new Set((opts.contactos || []).map((c) => c.replace(/\D/g, "")).filter(Boolean))
   const maxPorPasada = Math.max(1, Math.min(60, Number(opts.max) || 10))
   const horas = Math.max(1, Math.min(24 * 90, Number(opts.horas) || 48))
   const orden = opts.orden === "desc" ? "desc" : "asc"
@@ -2529,6 +2531,7 @@ async function reintentarPresentacionesPendientes(
     const clean = String(f.contact || "").replace(/\D/g, "")
     const email = (f.vendedor_email || "").trim()
     if (!clean || !email || isTestContact(clean, tests)) continue
+    if (soloContactos.size && !soloContactos.has(clean)) continue
     if (!enVentanaProactiva(clean, ahora)) {
       pendientes++
       continue
