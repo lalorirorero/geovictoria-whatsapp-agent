@@ -34,7 +34,7 @@
 
 import { getKvValue, getQuotePointers, setKvValue, type QuotePointer } from "@/lib/supabase-persistence-v3"
 import { transicionarDealHacia } from "@/lib/zoho-deals"
-import { claveFase, claveBorrador } from "@/lib/onboarding/fase"
+import { claveFase, claveBorrador, claveQuoteOnboarding } from "@/lib/onboarding/fase"
 import { onboardingActivoPara } from "@/lib/onboarding-piloto"
 import { parsearBorrador, sembrarBorrador } from "@/lib/onboarding/borrador"
 import { acuseComprobanteCL } from "@/lib/onboarding/prompt"
@@ -222,6 +222,22 @@ async function buscarCotizacionPorNumero(
  * 04-ago, opción 1): el estado dispara los workflows de Zoho amarrados a
  * "Pagada". Riesgo asumido y documentado en la nota: es pago DECLARADO — si
  * el abono no aparece en el banco, cobranza revierte el estado a mano. */
+/** ¿La cotización ya está Pagada en Zoho? (fail-closed: ante duda, se considera NO pagada). */
+async function cotizacionYaPagada(quoteId: string): Promise<boolean> {
+  try {
+    const token = await getZohoAccessToken()
+    const r = await fetch(`${ZOHO_API_DOMAIN}/crm/v3/${QUOTE_MODULE}/${quoteId}?fields=Estado_Cotizacion`, {
+      headers: { Authorization: `Zoho-oauthtoken ${token}` },
+      cache: "no-store",
+    })
+    if (r.status !== 200) return false
+    const e = String(((await r.json().catch(() => ({}))) as { data?: Array<{ Estado_Cotizacion?: string }> }).data?.[0]?.Estado_Cotizacion || "")
+    return /pagad/i.test(e)
+  } catch {
+    return false
+  }
+}
+
 export async function marcarCotizacionPagada(quoteId: string): Promise<boolean> {
   try {
     const token = await getZohoAccessToken()
@@ -372,6 +388,14 @@ export async function registrarComprobanteTransferencia(
 
   const pointers = await getQuotePointers(contact).catch(() => [])
   let pointer = pointers[0] || null
+  // ALTA ABIERTA MANDA (08-sep, caso Lorena: dos cotizaciones, una por RUT):
+  // si el ciclo de alta ya está anclado a una cotización de este contacto,
+  // el comprobante se asocia a ESA y no al puntero más reciente.
+  try {
+    const abierta = (await getKvValue(claveQuoteOnboarding(contact)).catch(() => null)) || ""
+    const pa = abierta ? pointers.find((p) => p.quoteId === abierta) : undefined
+    if (pa) pointer = pa
+  } catch { /* sin ancla: puntero más reciente */ }
 
   // Sin puntero para ESTE número: si el cliente mencionó el número de la
   // cotización (chat o comprobante), se resuelve contra Zoho. La nota interna
@@ -480,6 +504,35 @@ export async function registrarComprobanteTransferencia(
   const habilitaBlanda = comprobanteLegible && !!pointer && !montoInsuficiente
   const fmtClp = (n: number) => `$${Math.round(n).toLocaleString("es-CL")}`
 
+  // UN SOLO COMPROBANTE PARA VARIAS COTIZACIONES (Lalo 08-sep, caso Lorena:
+  // dos RUT, una transferencia por el total — "no tienen que ser 2
+  // transferencias"). Si el monto cubre el pago inicial de TODAS las
+  // cotizaciones vivas del contacto, todas quedan Pagadas: el alta parte con
+  // la principal y las demás caen en la cola del post-pago (segunda empresa).
+  const otrasCubiertas: Array<{ p: QuotePointer; esperado: number }> = []
+  if (habilitaBlanda && pointer && esperadoClp > 0 && pointers.length > 1) {
+    try {
+      let suma = esperadoClp
+      const cand: Array<{ p: QuotePointer; esperado: number }> = []
+      for (const o of pointers) {
+        if (o.quoteId === pointer.quoteId) continue
+        if (await cotizacionYaPagada(o.quoteId)) continue
+        const esp = await pagoInicialEsperadoClp(o.quoteId)
+        if (esp > 0) {
+          cand.push({ p: o, esperado: esp })
+          suma += esp
+        }
+      }
+      if (cand.length && monto >= Math.round(suma * 0.98)) otrasCubiertas.push(...cand)
+    } catch { /* sin cobertura extra: solo la principal */ }
+  }
+  const nombresCubiertas = [pointer?.empresa, ...otrasCubiertas.map((o) => o.p.empresa)].filter(Boolean).join(" y ")
+  const acuse = (m: string) =>
+    acuseComprobanteCL(m) +
+    (otrasCubiertas.length
+      ? `\n\nCon este pago quedan cubiertas las ${otrasCubiertas.length + 1} empresas (${nombresCubiertas}) 🙌 Partimos creando la cuenta de ${pointer?.empresa || "la primera"}; apenas quede lista seguimos con la otra por este mismo chat.`
+      : "")
+
   const lineas = [
     declarado
       ? `Cliente DECLARÓ pago por WhatsApp — sin comprobante (${new Date().toISOString()})`
@@ -495,6 +548,10 @@ export async function registrarComprobanteTransferencia(
       ? `⛔ MONTO INSUFICIENTE: el comprobante (${montoFmt}) es menor al pago inicial (${fmtClp(esperadoClp)}). NO se habilitó el onboarding ni se marcó Pagada; se le pidió al cliente la diferencia de ${fmtClp(esperadoClp - monto)}.`
       : "",
     pointer?.totalClp ? `Total registrado en la cotización: $${Math.round(pointer.totalClp).toLocaleString("es-CL")} (referencial — verificar pago inicial exacto)` : "",
+    ...otrasCubiertas.map(
+      (o) =>
+        `✅ El comprobante cubre TAMBIÉN la cotización ${o.p.quoteId} (${o.p.empresa || "-"} · RUT ${o.p.rut || "-"} · pago inicial ${fmtClp(o.esperado)}): se marca PAGADA; su alta queda EN COLA hasta que termine la de ${pointer?.empresa || pointer?.quoteId}.`,
+    ),
     input.bancoOrigen ? `Banco origen: ${input.bancoOrigen}` : "",
     input.fechaDetectada ? `Fecha transferencia: ${input.fechaDetectada}` : "",
     input.detalle ? `Detalle: ${input.detalle}` : "",
@@ -620,6 +677,10 @@ export async function registrarComprobanteTransferencia(
     // Y el DEAL avanza a ganado (Lalo 07-ago): misma política que "Pagada" —
     // si el abono no aparece en el banco, cobranza revierte a mano.
     await avanzarDealAGanado(pointer).catch(() => {})
+    for (const o of otrasCubiertas) {
+      await crearNotaEnCotizacion(o.p.quoteId, contenidoNota).catch(() => false)
+      await marcarCotizacionPagada(o.p.quoteId).catch(() => false)
+    }
     // GUARDRAIL DEL PAGADOR (Lalo 18-ago, caso +56978903360/COT339): cuando el
     // comprobante llega desde un número DISTINTO al de la cotización, el loop
     // del REMITENTE seguía vivo (solo se cerraba el del contacto de la
@@ -672,6 +733,9 @@ export async function registrarComprobanteTransferencia(
         )
         await setKvValue(claveBorrador(contact), JSON.stringify(sembrado))
         await setKvValue(claveFase(contact), "onboarding")
+        // La cotización que abre el ciclo queda anclada (08-sep) si nadie la ancló antes.
+        const yaAnclada = (await getKvValue(claveQuoteOnboarding(contact)).catch(() => null)) || ""
+        if (!yaAnclada) await setKvValue(claveQuoteOnboarding(contact), pointer.quoteId).catch(() => {})
       } catch (e) {
         console.error("[comprobante] no se pudo enrolar en onboarding:", e)
       }
@@ -705,7 +769,7 @@ export async function registrarComprobanteTransferencia(
               k.via === "texto"
                 ? "" // el arranque conversacional ya salió por el push del helper
                 : '\n\nTe acabo de mandar el formulario "Crear cuenta": ahí completas los datos de tu empresa y del administrador en un minuto. Si prefieres, también lo hacemos conversando por aquí.'
-            return { ok: true, mensajeParaProspecto: `${acuseComprobanteCL(montoFmt)}${cierre}`, notaCreada, avisoInterno }
+            return { ok: true, mensajeParaProspecto: `${acuse(montoFmt)}${cierre}`, notaCreada, avisoInterno }
           }
         } catch (e) {
           console.warn("[comprobante] kickoff por formulario falló; sigue el arranque en el mensaje:", e instanceof Error ? e.message : e)
@@ -717,7 +781,7 @@ export async function registrarComprobanteTransferencia(
       await setKvValue(`traspaso_postpago_${pointer.quoteId}`, new Date().toISOString()).catch(() => {})
       return {
         ok: true,
-        mensajeParaProspecto: `${acuseComprobanteCL(montoFmt)}\n\n${arranque}`,
+        mensajeParaProspecto: `${acuse(montoFmt)}\n\n${arranque}`,
         notaCreada,
         avisoInterno,
       }
