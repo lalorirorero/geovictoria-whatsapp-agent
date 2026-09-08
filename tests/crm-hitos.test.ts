@@ -116,6 +116,7 @@ describe("enriquecimiento aditivo con los datos de la conversación (Lalo 30-jul
       empresa: undefined,
       email: undefined,
       empleados: undefined,
+      rut: undefined,
     })
     assert.deepEqual(datosDeToolInput("cotizar_referencial", {}), { empleados: undefined })
   })
@@ -130,7 +131,7 @@ describe("enriquecimiento aditivo con los datos de la conversación (Lalo 30-jul
         empresa: "Veltis",
         trabajadores: "somos en corporativo 300 aprox",
       }),
-      { nombre: "Fermin Morales", email: "fermin.morales@veltislatam.com", empresa: "Veltis", empleados: 300 },
+      { nombre: "Fermin Morales", email: "fermin.morales@veltislatam.com", empresa: "Veltis", empleados: 300, rut: undefined },
     )
     // Caso VDZ: "entre 200 y 400" (chat) y "200 - 499" (formulario) → piso.
     assert.equal(datosDeToolInput("agendar_reunion", { trabajadores: "entre 200 y 400" }).empleados, 200)
