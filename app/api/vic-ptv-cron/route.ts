@@ -1090,9 +1090,44 @@ async function asignarEnZoho(
     // CONVIRTIO a deal, ese manda — entregar el gemelo sin convertir como
     // "lead para llamar" arma doble gestion.
     const filasLead = res.ok && res.status !== 204
-      ? ((await res.json().catch(() => ({}))) as { data?: Array<{ id?: string; Converted_Deal?: { id?: string } | null; Owner?: { id?: string; name?: string; email?: string }; Lead_Status?: string; N_de_empleados?: number | string | null }> }).data || []
+      ? ((await res.json().catch(() => ({}))) as { data?: Array<{ id?: string; Converted_Deal?: { id?: string } | null; Owner?: { id?: string; name?: string; email?: string }; Lead_Status?: string; N_Empleados_que_marcan?: number | string | null; RUT_Empresa?: string | null }> }).data || []
       : []
     const lead = filasLead.find((l) => l.Converted_Deal?.id) || filasLead[0]
+    // ANTES DE CUALQUIER TRASPASO SE REVISA EL ESTADO DE LA CONVERSACIÓN
+    // (Lalo 08-sep): con lead vivo en CL se lee lo que el chat ya dijo y se
+    // pasa por el hito ANTES de elegir destino. Regla: calificado (dotación
+    // conocida) + RUT → deal (forzado aunque sea ≤20) + Tómbola Deals;
+    // calificado sin RUT → tómbola de leads TLMK; sin calificar → SDR. Sin
+    // esto, un lead nacido "1." con 18 personas iba a SDR (caso Joyce) y un
+    // "40 app" sin RUT también (caso Diego).
+    if (lead?.id && !lead.Converted_Deal?.id && pais === "cl" && !segundaPasada) {
+      try {
+        const { datosDelChat } = await import("@/lib/extraer-datos-chat")
+        const chat = await datosDelChat(fono)
+        const empleadosLead = Number(lead.N_Empleados_que_marcan || 0) || 0
+        const rutLead = String(lead.RUT_Empresa || "").trim()
+        const empleados = chat.empleados || empleadosLead
+        const rut = chat.rut || rutLead
+        const calificadoAhora = calificado || empleados > 0 || String(lead.Lead_Status || "").trim().startsWith("4.")
+        if (chat.tieneAlgo || (calificadoAhora && rut)) {
+          const { sincronizarHitoCrm } = await import("@/lib/crm-hitos")
+          await sincronizarHitoCrm(fono, "intencion", {
+            nombre: chat.nombre,
+            empresa: chat.empresa,
+            email: chat.email,
+            rut: rut || undefined,
+            empleados: empleados || undefined,
+            forzarDeal: Boolean(calificadoAhora && rut),
+          })
+          console.log(
+            `[ptv] ${fono}: estado de la conversación revisado antes del traspaso (empleados=${empleados || "?"}, rut=${rut || "-"}, calificado=${calificadoAhora}); segunda pasada`,
+          )
+          return await asignarEnZoho(contact, pais, interno, calificadoAhora, true)
+        }
+      } catch (e) {
+        console.warn(`[ptv] ${fono}: revisión del chat antes del traspaso falló — sigue con el lead tal cual:`, e instanceof Error ? e.message : e)
+      }
+    }
     if (!lead?.id) {
       // Sin lead en Zoho no hay registro que asignar: se CREA (regla 1 del
       // Proceso de Gestión de Leads: primer contacto → lead automático) ya a
@@ -1322,9 +1357,12 @@ async function asignarEnZoho(
       // `calificado` del reloj solo mira PRECIO mostrado; si la conversación
       // ya dejó la dotación (lead en "4. Calificado" o N° de empleados
       // llenado), la calificación está HECHA → tómbola TLMK de ejecutivos.
+      // OJO campo real: `N_Empleados_que_marcan` (08-sep: se leía
+      // `N_de_empleados`, que no existe — un lead con 18 personas estampadas y
+      // status "1." se trataba como no calificado y caía en SDR; caso Joyce).
       const calificadoPorLead =
         String(lead.Lead_Status || "").trim().startsWith("4.") ||
-        Number(lead.N_de_empleados || 0) > 0
+        Number(lead.N_Empleados_que_marcan || 0) > 0
       const entregaCalificada = calificado || calificadoPorLead
       if (calificado && !calificadoPorLead) {
         // Vio precio pero el status quedó atrás: se sube para que el
@@ -1864,6 +1902,10 @@ export async function GET(req: Request) {
   // reintenta únicamente las presentaciones pendientes, sin correr el tick.
   {
     const sp = new URL(req.url).searchParams
+    if (sp.get("soloConciliacionSdr") === "1") {
+      const r = await reconciliarSdrCalificados(new Date())
+      return NextResponse.json({ ok: true, modo: "soloConciliacionSdr", ...r })
+    }
     if (sp.get("soloPresentaciones") === "1") {
       const r = await reintentarPresentacionesPendientes(new Date(), {
         max: Number(sp.get("max")) || 20,
@@ -2259,6 +2301,17 @@ export async function GET(req: Request) {
     console.log(`[ptv-cron] presentaciones pendientes: ${JSON.stringify(presentacionesPend)}`)
   }
 
+  // 4c. CONCILIACIÓN SDR → CALIFICADOS (Lalo 08-sep): con vic_kv
+  // `sdr_recon_enabled`="on" (apagado por defecto hasta su OK).
+  const sdrReconOn = ((await getKvValue("sdr_recon_enabled").catch(() => null)) || "").trim() === "on"
+  if (sdrReconOn) {
+    const rc = await reconciliarSdrCalificados(ahora).catch((e) => {
+      console.warn("[ptv-cron] conciliación SDR falló:", e instanceof Error ? e.message : e)
+      return { revisados: 0, reenviados: 0, detalle: [] as string[] }
+    })
+    if (rc.revisados > 0) console.log(`[ptv-cron] conciliación SDR: ${JSON.stringify(rc)}`)
+  }
+
   // 5. ESCALADA SLA 60' (punto 1, Lalo 08-ago): traspaso activo sin contacto
   // real del vendedor a los 60 min hábiles → alerta interna, una sola vez.
   const slaAlertas = await escaladaSla(ahora).catch((e) => {
@@ -2536,6 +2589,175 @@ async function reintentarPresentacionesPendientes(
     }
   }
   return { presentados, pendientes, detalle }
+}
+
+/**
+ * CONCILIACIÓN SDR → CALIFICADOS (Lalo 08-sep, "los de Aleydis y Aracelli
+ * solo deberían traspasárselos si no se logró calificar; si no, tómbola de
+ * leads TLMK sin RUT y deal + tómbola con RUT"). Cada tick repasa leads y
+ * deals de la última semana en manos del roster SDR: si la conversación o el
+ * registro ya traen dotación (calificado) y no está cerrado ni marcado "No
+ * Calificado", se re-entrega por la regla correcta, se avisa al nuevo dueño y
+ * se presenta al cliente. Solo abiertos: pagados y perdidos no se tocan.
+ * Candado kv `sdr_recon_<id>` (7 d). Máximo 4 por tick.
+ */
+async function reconciliarSdrCalificados(ahora: Date): Promise<{ revisados: number; reenviados: number; detalle: string[] }> {
+  const roster = (process.env.VICKY_TM_ROSTER_CALIFICACION_EMAILS || "aaraque@geovictoria.com,asepulveda@geovictoria.com")
+    .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
+  const out = { revisados: 0, reenviados: 0, detalle: [] as string[] }
+  if (!roster.length) return out
+  const desde = new Date(ahora.getTime() - 7 * 24 * 3600_000).toISOString().replace(/\.\d{3}Z$/, "+00:00")
+  const { getZohoAccessToken } = await import("@/lib/zoho-token")
+  const token = await getZohoAccessToken()
+  const api = (process.env.ZOHO_API_DOMAIN || "https://www.zohoapis.com").trim()
+  const H = { Authorization: `Zoho-oauthtoken ${token}`, "Content-Type": "application/json" }
+  const coql = async <T,>(q: string): Promise<T[]> => {
+    const r = await fetch(`${api}/crm/v8/coql`, { method: "POST", headers: H, cache: "no-store", body: JSON.stringify({ select_query: q }) })
+    if (!r.ok || r.status === 204) return []
+    return (((await r.json().catch(() => ({}))) as { data?: T[] }).data || [])
+  }
+  const lista = roster.map((e) => `'${e}'`).join(",")
+  const tests = testContactSet()
+  const cerrado = async (fono: string): Promise<boolean> => {
+    // Pagado (venta en caja) = cerrado; también comprobante/pago online reciente.
+    const punteros = await getQuotePointers(fono).catch(() => [])
+    for (const p of punteros) {
+      if (p.quoteId && (await getKvValue(`venta_dash_v3_${p.quoteId}`).catch(() => null))) return true
+    }
+    if (await getKvValue(`comprobante_ok_${fono}`).catch(() => null)) return true
+    if (await getKvValue(`pago_online_${fono}`).catch(() => null)) return true
+    return false
+  }
+  const presentar = async (fono: string, email: string, zohoId: string, nombre: string, motivo: string) => {
+    // La fila vic_ptv activa del contacto pasa al dueño nuevo y se presenta.
+    const filas = await supa<{ id: string }>(`vic_ptv?contact=eq.${fono}&estado=eq.activo&select=id&limit=1`).catch(() => [])
+    if (filas[0]?.id) {
+      await supa(`vic_ptv?id=eq.${filas[0].id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ vendedor_email: email, vendedor_zoho_id: zohoId, vendedor_nombre: nombre, presentado_al_prospecto: false, motivo }),
+      }).catch(() => {})
+    } else {
+      await supa(`vic_ptv`, {
+        method: "POST",
+        body: JSON.stringify({ contact: fono, motivo, ttv_minutos: 0, precio_mostrado: false, vendedor_email: email, vendedor_zoho_id: zohoId, vendedor_nombre: nombre, traspasado_at: ahora.toISOString(), presentado_al_prospecto: false, estado: "activo" }),
+      }).catch(() => {})
+    }
+    await asignarConversacionEnBotmaker(fono, email).catch(() => {})
+    await reintentarPresentacionesPendientes(ahora, { max: 3, horas: 24 * 8 }).catch(() => null)
+  }
+  let chatsLeidos = 0
+  // ── Leads vivos del roster SDR ──
+  const leads = await coql<{ id: string; Phone?: string; Lead_Status?: string; N_Empleados_que_marcan?: number; RUT_Empresa?: string; "Owner.email"?: string; First_Name?: string; Company?: string }>(
+    `select id, Phone, Lead_Status, N_Empleados_que_marcan, RUT_Empresa, Owner.email, First_Name, Company from Leads ` +
+      `where ((Owner.email in (${lista}) and Converted__s = false) and Created_Time >= '${desde}') limit 60`,
+  )
+  for (const l of leads) {
+    if (out.reenviados >= 4) break
+    const status = String(l.Lead_Status || "")
+    if (/no calificado/i.test(status)) continue
+    const fono = String(l.Phone || "").replace(/\D/g, "")
+    if (!fono || !fono.startsWith("56") || isTestContact(fono, tests)) continue
+    if (await getKvValue(`sdr_recon_${l.id}`).catch(() => null)) continue
+    out.revisados++
+    let empleados = Number(l.N_Empleados_que_marcan || 0) || 0
+    let rut = String(l.RUT_Empresa || "").trim()
+    let datosChat: { nombre?: string; empresa?: string; email?: string } = {}
+    if (empleados <= 0 && !status.trim().startsWith("4.") && chatsLeidos < 3) {
+      chatsLeidos++
+      try {
+        const { datosDelChat } = await import("@/lib/extraer-datos-chat")
+        const chat = await datosDelChat(fono)
+        empleados = chat.empleados || 0
+        rut = rut || chat.rut || ""
+        datosChat = { nombre: chat.nombre, empresa: chat.empresa, email: chat.email }
+      } catch { /* sin lectura: no calificado por ahora */ }
+    }
+    const calificado = empleados > 0 || status.trim().startsWith("4.")
+    if (!calificado) continue
+    if (await cerrado(fono)) {
+      await setKvValue(`sdr_recon_${l.id}`, "cerrado").catch(() => {})
+      continue
+    }
+    await setKvValue(`sdr_recon_${l.id}`, ahora.toISOString()).catch(() => {})
+    try {
+      if (rut) {
+        // Con RUT: deal (forzado) + Tómbola Deals.
+        const { sincronizarHitoCrm } = await import("@/lib/crm-hitos")
+        await sincronizarHitoCrm(fono, "intencion", { ...datosChat, rut, empleados: empleados || undefined, forzarDeal: true })
+        const rs = await fetch(`${api}/crm/v3/Leads/search?phone=${fono}&converted=both&per_page=3`, { headers: H, cache: "no-store" })
+        const filas = rs.ok && rs.status !== 204 ? (((await rs.json().catch(() => ({}))) as { data?: Array<{ Converted_Deal?: { id?: string } | null }> }).data || []) : []
+        const dealId = filas.find((x) => x.Converted_Deal?.id)?.Converted_Deal?.id || ""
+        if (dealId && TOMBOLA_DEALS_RULE.cl) {
+          const put = await fetch(`${api}/crm/v3/Deals`, { method: "PUT", headers: H, cache: "no-store", body: JSON.stringify({ data: [{ id: dealId }], lar_id: TOMBOLA_DEALS_RULE.cl }) })
+          const get = await fetch(`${api}/crm/v3/Deals/${dealId}?fields=Owner`, { headers: H, cache: "no-store" })
+          const owner = (((await get.json().catch(() => ({}))) as { data?: Array<{ Owner?: { id?: string; name?: string; email?: string } }> }).data?.[0]?.Owner)
+          if (put.ok && owner?.id && owner?.email && !roster.includes(owner.email.toLowerCase())) {
+            const { notificarTraspasoDeal } = await import("@/lib/crm-hitos")
+            await notificarTraspasoDeal(dealId).catch(() => {})
+            await presentar(fono, owner.email, owner.id, owner.name || owner.email.split("@")[0], "sdr_calificado_deal")
+            out.reenviados++
+            out.detalle.push(`+${fono} lead ${l.id} (${empleados} pers., RUT) → deal ${dealId} → ${owner.email}`)
+            await avisarEquipoInterno(`🔁 CONCILIACIÓN SDR: +${fono} (${l.Company || datosChat.empresa || "?"}, ${empleados || "?"} personas, con RUT) estaba con ${l["Owner.email"]} sin calificar y ya está CALIFICADO → deal ${dealId} sorteado a ${owner.email}.`).catch(() => {})
+            continue
+          }
+        }
+      }
+      // Sin RUT (o sin deal): lead calificado → tómbola de leads TLMK.
+      const { reasignarLeadCalificacionCL, updateZohoLeadStatus } = await import("@/lib/zoho-leads")
+      if (!status.trim().startsWith("4.")) await updateZohoLeadStatus(l.id, "4. Calificado").catch(() => {})
+      if (empleados > 0 && !(Number(l.N_Empleados_que_marcan || 0) > 0)) {
+        await fetch(`${api}/crm/v3/Leads`, { method: "PUT", headers: H, cache: "no-store", body: JSON.stringify({ data: [{ id: l.id, N_Empleados_que_marcan: empleados }], trigger: ["blueprint"], skip_feature_execution: [{ name: "assignment_rules" }] }) }).catch(() => null)
+      }
+      const r = await reasignarLeadCalificacionCL(l.id, { calificado: true }).catch(() => null)
+      if (r?.success && r.ownerEmail && r.ownerId && !roster.includes(r.ownerEmail.toLowerCase())) {
+        await notificarTraspasoLeadEmail(l.id, r.ownerEmail, fono, H, api, `estaba en calificación SDR y la conversación YA trae la dotación (${empleados || "?"} personas): <b>lead calificado, ahora es tuyo</b>.`).catch(() => {})
+        await presentar(fono, r.ownerEmail, r.ownerId, r.ownerNombre || NOMBRE_VENDEDOR[r.ownerEmail] || r.ownerEmail.split("@")[0], "sdr_calificado_lead")
+        out.reenviados++
+        out.detalle.push(`+${fono} lead ${l.id} (${empleados} pers., sin RUT) → TLMK ${r.ownerEmail}`)
+        await avisarEquipoInterno(`🔁 CONCILIACIÓN SDR: +${fono} (${l.Company || datosChat.empresa || "?"}, ${empleados || "?"} personas, sin RUT) estaba con ${l["Owner.email"]} y ya está CALIFICADO → tómbola TLMK → ${r.ownerEmail}.`).catch(() => {})
+      } else {
+        out.detalle.push(`+${fono} lead ${l.id}: la regla TLMK devolvió ${r?.ownerEmail || "nada"} (sin cambio)`)
+      }
+    } catch (e) {
+      out.detalle.push(`+${fono} lead ${l.id}: error ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  // ── Deals vivos del roster SDR (lead calificado que ya convirtió) ──
+  const deals = await coql<{ id: string; Deal_Name?: string; Stage?: string; N_Empleados_que_marcan?: number; "Owner.email"?: string; "Contact_Name.Phone"?: string }>(
+    `select id, Deal_Name, Stage, N_Empleados_que_marcan, Owner.email, Contact_Name.Phone from Deals ` +
+      `where ((Owner.email in (${lista}) and Created_Time >= '${desde}') and Stage not in ('Cierre Perdido','7. Implementando','8. Facturando')) limit 40`,
+  )
+  for (const d of deals) {
+    if (out.reenviados >= 4) break
+    if (await getKvValue(`sdr_recon_deal_${d.id}`).catch(() => null)) continue
+    const fono = String(d["Contact_Name.Phone"] || "").replace(/\D/g, "")
+    if (!fono || !fono.startsWith("56") || isTestContact(fono, tests)) continue
+    out.revisados++
+    if (await cerrado(fono)) {
+      await setKvValue(`sdr_recon_deal_${d.id}`, "cerrado").catch(() => {})
+      continue
+    }
+    await setKvValue(`sdr_recon_deal_${d.id}`, ahora.toISOString()).catch(() => {})
+    try {
+      if (!TOMBOLA_DEALS_RULE.cl) break
+      const put = await fetch(`${api}/crm/v3/Deals`, { method: "PUT", headers: H, cache: "no-store", body: JSON.stringify({ data: [{ id: d.id }], lar_id: TOMBOLA_DEALS_RULE.cl }) })
+      const get = await fetch(`${api}/crm/v3/Deals/${d.id}?fields=Owner`, { headers: H, cache: "no-store" })
+      const owner = (((await get.json().catch(() => ({}))) as { data?: Array<{ Owner?: { id?: string; name?: string; email?: string } }> }).data?.[0]?.Owner)
+      if (put.ok && owner?.id && owner?.email && !roster.includes(owner.email.toLowerCase())) {
+        const { notificarTraspasoDeal } = await import("@/lib/crm-hitos")
+        await notificarTraspasoDeal(d.id).catch(() => {})
+        await presentar(fono, owner.email, owner.id, owner.name || owner.email.split("@")[0], "sdr_calificado_deal")
+        out.reenviados++
+        out.detalle.push(`+${fono} deal ${d.id} (${d.Deal_Name || ""}) → ${owner.email}`)
+        await avisarEquipoInterno(`🔁 CONCILIACIÓN SDR: el deal ${d.Deal_Name || d.id} (+${fono}) estaba con ${d["Owner.email"]} (calificación) y ya está CALIFICADO → Tómbola Deals → ${owner.email}.`).catch(() => {})
+      } else {
+        out.detalle.push(`+${fono} deal ${d.id}: la tómbola devolvió ${owner?.email || "nada"} (sin cambio)`)
+      }
+    } catch (e) {
+      out.detalle.push(`+${fono} deal ${d.id}: error ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  return out
 }
 
 /**

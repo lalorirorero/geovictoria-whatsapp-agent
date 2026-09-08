@@ -175,6 +175,11 @@ export type DatosConversacion = {
   email?: string
   rut?: string
   empleados?: number
+  /** Traspaso a humano con RUT y calificado (Lalo 08-sep: "si hay RUT pasa a
+   * deal y a tómbola de telemarketing"): el deal nace aunque la dotación sea
+   * ≤20 — la excepción es SOLO para entregas a persona, no para el flujo
+   * autónomo ≤20 (ese sigue: deal con la formal). */
+  forzarDeal?: boolean
 }
 
 /**
@@ -1651,7 +1656,7 @@ export async function sincronizarHitoCrm(
         console.log(`[crm-hitos] ${clean}: hito "${hito}" sin empresa/RUT — lead ${creado.leadId} espera identidad para convertir (deal pendiente)`)
         return
       }
-      const escaleraNuevo = escaleraDealConRut(territorioDeContacto(clean), lead, datos)
+      const escaleraNuevo = escaleraDealConRut(territorioDeContacto(clean), lead, datos) || (datos.forzarDeal === true && Boolean(datos.rut || lead.rut))
       if (dealSoloConFormal(territorioDeContacto(clean), hito) && !escaleraNuevo) {
         await dejarLeadPreFormal(lead, clean, hito, ownerForzadoId, opts.sorteoInmediato)
         return
@@ -1735,7 +1740,7 @@ export async function sincronizarHitoCrm(
 
     if (!lead.convertido) {
       await subirLeadStatus(lead, hito)
-      const escaleraExistente = escaleraDealConRut(territorioDeContacto(clean), lead, datos)
+      const escaleraExistente = escaleraDealConRut(territorioDeContacto(clean), lead, datos) || (datos.forzarDeal === true && Boolean(datos.rut || lead.rut))
       // ESCALERA 18-ago sobre lead de dueño humano: con RUT y N>20 el deal SÍ
       // nace, pero A NOMBRE DEL MISMO dueño (a un humano real nadie lo
       // re-sortea — 04-ago). Cubre el retrofit de INTEXGROUP/Castro y el caso
