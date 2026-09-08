@@ -391,10 +391,21 @@ export async function registrarComprobanteTransferencia(
   // ALTA ABIERTA MANDA (08-sep, caso Lorena: dos cotizaciones, una por RUT):
   // si el ciclo de alta ya está anclado a una cotización de este contacto,
   // el comprobante se asocia a ESA y no al puntero más reciente.
+  // Y una cotización YA PAGADA no vuelve a recibir comprobantes: si el
+  // cliente paga la segunda empresa con OTRA transferencia (Lalo: "es como el
+  // cliente quiera"), el comprobante se asocia a la que sigue sin pagar.
   try {
     const abierta = (await getKvValue(claveQuoteOnboarding(contact)).catch(() => null)) || ""
     const pa = abierta ? pointers.find((p) => p.quoteId === abierta) : undefined
-    if (pa) pointer = pa
+    if (pa && !(await cotizacionYaPagada(pa.quoteId))) pointer = pa
+    else if (pointer && pointers.length > 1 && (await cotizacionYaPagada(pointer.quoteId))) {
+      for (const o of pointers) {
+        if (o.quoteId !== pointer.quoteId && !(await cotizacionYaPagada(o.quoteId))) {
+          pointer = o
+          break
+        }
+      }
+    }
   } catch { /* sin ancla: puntero más reciente */ }
 
   // Sin puntero para ESTE número: si el cliente mencionó el número de la
@@ -715,6 +726,23 @@ export async function registrarComprobanteTransferencia(
     // pago online: el cliente ACABA de mandar el comprobante, así que la
     // ventana de 24 h está abierta por definición.
     if (pais === "cl" && (await onboardingActivoPara(contact))) {
+      // SEGUNDA EMPRESA con el alta de la primera todavía abierta (08-sep):
+      // no se re-siembra ni se manda otro formulario — queda pagada y en
+      // cola (el post-pago del cotizador la encola con aviso interno).
+      try {
+        const faseAct = (await getKvValue(claveFase(contact)).catch(() => null)) || ""
+        const anclada = (await getKvValue(claveQuoteOnboarding(contact)).catch(() => null)) || ""
+        if (faseAct === "onboarding" && anclada && anclada !== pointer.quoteId) {
+          const abiertaNombre = pointers.find((p) => p.quoteId === anclada)?.empresa || "la primera empresa"
+          return {
+            ok: true,
+            mensajeParaProspecto:
+              `${acuse(montoFmt)}\n\nEsta cotización (${pointer.empresa || "segunda empresa"}) queda registrada como pagada. Como ya estamos creando la cuenta de ${abiertaNombre}, apenas quede lista seguimos con ${pointer.empresa || "la segunda"} por este mismo chat 😊`,
+            notaCreada,
+            avisoInterno,
+          }
+        }
+      } catch { /* sigue el camino normal */ }
       let sembrado = null
       try {
         const previo = parsearBorrador(await getKvValue(claveBorrador(contact)).catch(() => null))
