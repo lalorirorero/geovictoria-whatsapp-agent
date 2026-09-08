@@ -1859,6 +1859,20 @@ export async function GET(req: Request) {
   if (!(await authorized(req))) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 })
   }
+  // MODO SOLO PRESENTACIONES (Lalo 08-sep, "esos 80 vamos por tandas de 20 de
+  // lo más actual a lo más antiguo"): ?soloPresentaciones=1&max=20&horas=720
+  // reintenta únicamente las presentaciones pendientes, sin correr el tick.
+  {
+    const sp = new URL(req.url).searchParams
+    if (sp.get("soloPresentaciones") === "1") {
+      const r = await reintentarPresentacionesPendientes(new Date(), {
+        max: Number(sp.get("max")) || 20,
+        horas: Number(sp.get("horas")) || 48,
+        orden: sp.get("orden") === "asc" ? "asc" : "desc",
+      })
+      return NextResponse.json({ ok: true, modo: "soloPresentaciones", ...r })
+    }
+  }
   // ── DISPARO DEL CANARIO (Rodrigo 03-sep) ──────────────────────────────────
   // Los crons del vercel.json NO corren en este proyecto (la "producción" de
   // Vercel apunta al master viejo; los ticks reales vienen de un programador
@@ -2428,8 +2442,14 @@ function enVentanaProactiva(fono: string, ahora: Date): boolean {
  * `vicky_traspaso_ejecutivo` si no (CL/PE; sin teléfono del vendedor no se
  * presenta a medias). Máximo 10 por tick para no hacer ráfaga.
  */
-async function reintentarPresentacionesPendientes(ahora: Date): Promise<{ presentados: number; pendientes: number }> {
-  const desde = new Date(ahora.getTime() - 48 * 3600_000).toISOString()
+async function reintentarPresentacionesPendientes(
+  ahora: Date,
+  opts: { max?: number; horas?: number; orden?: "asc" | "desc" } = {},
+): Promise<{ presentados: number; pendientes: number; detalle: string[] }> {
+  const maxPorPasada = Math.max(1, Math.min(60, Number(opts.max) || 10))
+  const horas = Math.max(1, Math.min(24 * 90, Number(opts.horas) || 48))
+  const orden = opts.orden === "desc" ? "desc" : "asc"
+  const desde = new Date(ahora.getTime() - horas * 3600_000).toISOString()
   const filas = await supa<{
     id: string
     contact: string
@@ -2439,10 +2459,11 @@ async function reintentarPresentacionesPendientes(ahora: Date): Promise<{ presen
     traspasado_at: string
   }>(
     `vic_ptv?estado=eq.activo&presentado_al_prospecto=eq.false&traspasado_at=gte.${encodeURIComponent(desde)}` +
-      `&select=id,contact,vendedor_email,vendedor_nombre,vendedor_zoho_id,traspasado_at&order=traspasado_at.asc&limit=60`,
+      `&select=id,contact,vendedor_email,vendedor_nombre,vendedor_zoho_id,traspasado_at&order=traspasado_at.${orden}&limit=200`,
   ).catch(() => [])
   let presentados = 0
   let pendientes = 0
+  const detalle: string[] = []
   const tests = testContactSet()
   let H: Record<string, string> | null = null
   let api = ""
@@ -2454,7 +2475,7 @@ async function reintentarPresentacionesPendientes(ahora: Date): Promise<{ presen
       pendientes++
       continue
     }
-    if (presentados >= 10) {
+    if (presentados >= maxPorPasada) {
       pendientes++
       continue
     }
@@ -2502,12 +2523,14 @@ async function reintentarPresentacionesPendientes(ahora: Date): Promise<{ presen
       await supa(`vic_ptv?id=eq.${f.id}`, { method: "PATCH", body: JSON.stringify({ presentado_al_prospecto: true }) }).catch(() => {})
       await appendAssistantV3(clean, registro).catch(() => {})
       presentados++
+      detalle.push(`+${clean} → ${nombre} (${ventanaAbierta ? "texto" : "plantilla"})`)
       console.log(`[ptv-cron] presentación reintentada +${clean} → ${email} (${ventanaAbierta ? "texto" : "plantilla"})`)
     } else {
       pendientes++
+      detalle.push(`+${clean} → ${nombre}: NO salió (${ventanaAbierta ? "texto" : "plantilla"})`)
     }
   }
-  return { presentados, pendientes }
+  return { presentados, pendientes, detalle }
 }
 
 /**
