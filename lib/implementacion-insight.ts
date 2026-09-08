@@ -38,6 +38,8 @@ import {
 import { configuracionVacia, type Configuracion } from "./onboarding/configuracion"
 import { parsearBorrador, type Borrador } from "./onboarding/borrador"
 import { PREGUNTAS_ESQUEMA, pendientesEsquema, respondidasEsquema, type EsquemaOperacion } from "./onboarding/esquema"
+import { camposPlanillasImp, detalleParaCapacitacion, type CamposPlanillasActual } from "./onboarding/planillas-texto"
+import { adjuntarPlanillasImplementacion, TITULO_NOTA_PLANILLAS } from "./implementacion-planillas"
 
 const API = () => (process.env.ZOHO_API_DOMAIN || "https://www.zohoapis.com").trim()
 export const TITULO_NOTA_INSIGHT = "Insight de la conversación (Vicky)"
@@ -163,7 +165,7 @@ function equiposVendidos(items: ItemCot[]): string {
 }
 
 /** El checklist determinista: lo que SÍ se levantó y lo que NO. */
-export function checklistInsight(d: DatosInsight): string {
+export function checklistInsight(d: DatosInsight, planillas?: { archivos: string[] }): string {
   const L: string[] = []
   const admin = d.borrador?.admin
   const nombreAdmin = [admin?.nombre, admin?.apellido].filter(Boolean).join(" ").trim()
@@ -185,6 +187,13 @@ export function checklistInsight(d: DatosInsight): string {
   const na = d.config.asignaciones.length
   L.push(nt > 0 ? `✅ Turnos definidos: ${d.config.turnos.map((t) => t.nombre).filter(Boolean).join(", ")}` : "❌ Turnos: no definidos")
   L.push(np > 0 ? `✅ Planificaciones: ${np} (${na} asignaciones)` : "❌ Planificaciones: no armadas")
+  if (n > 0) {
+    L.push(
+      planillas?.archivos?.length
+        ? `✅ Planillas Excel (usuarios + planificaciones) adjuntas en la nota "${TITULO_NOTA_PLANILLAS}": ${planillas.archivos.join(" · ")} — cargar en la capacitación (el alta por chat no crea usuarios)`
+        : "❌ Planillas Excel: aún no generadas (el cliente no confirmó la configuración por chat) — la nómina va abajo en texto",
+    )
+  }
   L.push(
     d.cap?.bookingId
       ? `✅ Capacitación (Curso 1) agendada: ${d.cap.cuando || "fecha en Bookings"}${d.cap.relator ? ` con ${d.cap.relator.nombre}` : ""}`
@@ -200,6 +209,8 @@ export function checklistInsight(d: DatosInsight): string {
     L.push(`   ❌ Por definir en la capacitación${d.esquema.loVeEnCapacitacion ? " (el cliente prefirió verlas ahí)" : ""}: ${pend.map((p) => p.corta).join(" · ")}`)
   }
   if (d.chatUrl) L.push(`• Chat completo: ${d.chatUrl}`)
+  const detalle = detalleParaCapacitacion(d.config)
+  if (detalle) L.push("", detalle)
   return L.join("\n")
 }
 
@@ -309,7 +320,7 @@ async function upsertNota(token: string, impId: string, contact: string, titulo:
 export async function sincronizarInsightImplementacion(
   contact: string,
   opts: { force?: boolean; implementacionId?: string } = {},
-): Promise<{ ok: boolean; motivo?: string; implementacionId?: string; notaId?: string; insight?: string }> {
+): Promise<{ ok: boolean; motivo?: string; implementacionId?: string; notaId?: string; insight?: string; planillas?: string[]; planillasMotivo?: string }> {
   const fono = (contact || "").replace(/\D/g, "")
   try {
     const d = await reunirDatosInsight(fono)
@@ -321,13 +332,27 @@ export async function sincronizarInsightImplementacion(
     }
     await setKvValue(claveInsightSync(fono), String(Date.now())).catch(() => {})
 
-    const checklist = checklistInsight(d)
+    // Planillas del wizard → nota con los Excel adjuntos (formato de las IMP del wizard, Lalo 08-sep).
+    const planillas = await adjuntarPlanillasImplementacion(fono, impId, d.empresa, detalleParaCapacitacion(d.config))
+    const checklist = checklistInsight(d, planillas)
     const { resumen, insight } = await resumenInsight(d, checklist)
     const transcript = transcripcionInsight(d)
     const token = await getZohoAccessToken()
     const H = { Authorization: `Zoho-oauthtoken ${token}`, "Content-Type": "application/json" }
 
+    // Campos "qué hay para cargar" sin pisar lo que el implementador ya escribió.
+    let actual: CamposPlanillasActual = {}
+    try {
+      const rImp = await fetch(
+        `${API()}/crm/v3/Implementaciones/${impId}?fields=Confirmo_la_cargo_de_Planilla_de_Ingreso_SMB,Usuarios_cargados,Tipo_de_Planificaci_n,Estado_Planificaci_n_Turnos,Se_debe_planificar_turnos_GV`,
+        { headers: H, cache: "no-store" },
+      )
+      actual = (((await rImp.json().catch(() => ({}))) as { data?: CamposPlanillasActual[] }).data?.[0]) || {}
+    } catch {
+      actual = {}
+    }
     const campos: Record<string, unknown> = {
+      ...camposPlanillasImp(d.config, planillas.archivos.length > 0, actual),
       Comentarios_adicionales: `${insight}\n\n${checklist}`.slice(0, 30000),
       Dolor_levantado_con_Cliente: resumen.slice(0, 30000),
     }
@@ -358,7 +383,7 @@ export async function sincronizarInsightImplementacion(
       `TRANSCRIPCIÓN (WhatsApp con Vicky${d.chatUrl ? `, chat completo: ${d.chatUrl}` : ""})\n${transcript || "(sin mensajes)"}`
     const notaId = await upsertNota(token, impId, fono, `${TITULO_NOTA_INSIGHT} · ${d.empresa || fono}`.slice(0, 120), contenido.slice(0, 60000))
     console.log(`[imp-insight] ${impId} sincronizado (nota ${notaId || "∅"}): ${insight.slice(0, 120)}`)
-    return { ok: true, implementacionId: impId, notaId: notaId || undefined, insight }
+    return { ok: true, implementacionId: impId, notaId: notaId || undefined, insight, planillas: planillas.archivos, planillasMotivo: planillas.motivo }
   } catch (e) {
     console.warn("[imp-insight] excepción:", e instanceof Error ? e.message : e)
     return { ok: false, motivo: e instanceof Error ? e.message : String(e) }

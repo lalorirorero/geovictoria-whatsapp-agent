@@ -83,3 +83,5 @@ export const claveEsquemaOfrecido = (contact: string) => `onboarding_esquema_ofr
 export const claveInsightNota = (contact: string) => `onb_insight_nota_${contact}`
 /** Última sincronización del insight hacia Zoho (debounce). */
 export const claveInsightSync = (contact: string) => `onb_insight_sync_${contact}`
+/** Planillas Excel del wizard ya adjuntas a la Implementación (JSON {impId, notaId, archivos}) — para no re-adjuntar. */
+export const clavePlanillasImp = (contact: string) => `onb_planillas_imp_${contact}`
